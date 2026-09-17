@@ -1,0 +1,72 @@
+# 줄바꿈·바이너리 규칙.
+#
+# 이 파일이 없으면 동작이 각자 PC 의 core.autocrlf 전역 설정에 좌우된다.
+# 팀원 한 명이 다른 설정이면, 한 줄만 고쳐도 diff 에 파일 전체가 뜨고
+# 머지 충돌이 파일 전체에서 난다. 그래서 저장소에 규칙을 박아 둔다.
+#
+# text      = 저장소에 LF 로 저장하고, 체크아웃할 때 OS 기본(Windows=CRLF)으로 꺼낸다
+# binary    = 줄바꿈 변환도, 머지 시도도, diff 도 하지 않는다
+#
+# ※ Git LFS 는 아직 도입하지 않았다. .uasset 이 이미 LFS 없이 커밋되어 있어서
+#   지금 넣으면 히스토리를 다시 써야 한다. 도입한다면 별도 작업으로.
+
+# 기본: Git 이 텍스트/바이너리를 판별하고, 텍스트는 저장소에 LF 로 정규화
+* text=auto
+
+# --- 텍스트 (명시) --------------------------------------------------------
+*.cpp       text
+*.h         text
+*.hpp       text
+*.inl       text
+*.cs        text
+*.ini       text
+*.md        text
+*.txt       text
+*.json      text
+*.py        text
+*.uproject  text
+*.uplugin   text
+*.ush       text
+*.usf       text
+.gitignore      text
+.gitattributes  text
+
+# --- 언리얼 에셋 — 반드시 바이너리 ----------------------------------------
+# Git 의 자동 판별에만 맡기면 텍스트로 오판할 여지가 있고, 그 순간 에셋이 깨진다.
+*.uasset    binary
+*.umap      binary
+*.upk       binary
+*.udk       binary
+
+# --- 그 외 바이너리 -------------------------------------------------------
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.tga       binary
+*.bmp       binary
+*.psd       binary
+*.exr       binary
+*.hdr       binary
+*.fbx       binary
+*.obj       binary
+*.3ds       binary
+*.blend     binary
+*.wav       binary
+*.mp3       binary
+*.ogg       binary
+*.flac      binary
+*.dll       binary
+*.exe       binary
+*.lib       binary
+*.pdb       binary
+*.so        binary
+*.dylib     binary
+*.zip       binary
+*.7z        binary
+*.rar       binary
+*.pak       binary
+*.ttf       binary
+*.otf       binary
+*.icu       binary
+*.res       binary

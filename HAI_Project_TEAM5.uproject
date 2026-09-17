@@ -38,6 +38,10 @@
 		{
 			"Name": "AllToolsets",
 			"Enabled": true
+		},
+		{
+			"Name": "LearningAgents",
+			"Enabled": true
 		}
 	]
 }
