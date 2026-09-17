@@ -2,7 +2,8 @@
 
 > HAI 2026-1 TEAM 5 / UE 5.8 / LearningAgents 0.2 (experimental)
 > 최종 갱신: **2026-09-17**
-> 상세 설계는 별도 계획 문서 참조. 이 문서는 **무엇이 끝났고 다음에 뭘 하는지**만 적는다.
+> 상세 설계(스키마·보상·커리큘럼·출고)는 [PLAN.md](PLAN.md) 참조.
+> 이 문서는 **무엇이 끝났고 다음에 뭘 하는지**만 적는다.
 
 ---
 
@@ -385,6 +386,7 @@ UPROPERTY(EditAnywhere) bool bPolicyControlsTarget = true;
 
 | 무엇 | 어디 |
 |---|---|
+| **상세 설계 계획서** | [Docs/PLAN.md](PLAN.md) |
 | 아레나 | [Source/HAI_Project_TEAM5/RL/SH_Arena.h](../Source/HAI_Project_TEAM5/RL/SH_Arena.h) |
 | 디렉터 | [Source/HAI_Project_TEAM5/RL/SH_RLDirector.h](../Source/HAI_Project_TEAM5/RL/SH_RLDirector.h) |
 | 스크립트 봇 | [Source/HAI_Project_TEAM5/RL/SH_ScriptBotController.h](../Source/HAI_Project_TEAM5/RL/SH_ScriptBotController.h) |
