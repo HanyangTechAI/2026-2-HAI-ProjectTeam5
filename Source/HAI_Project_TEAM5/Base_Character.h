@@ -35,9 +35,13 @@ public:
 	UFUNCTION()
 	void HandleDeath(AActor* Victim, AActor* Causer);
 
-	/** 에피소드 리셋. HP 복구 · 누산기 클리어 · 콜리전 재활성화 · 쿨다운 리셋. */
+	/** 에피소드 리셋. HP 복구 · 누산기 클리어 · 콜리전 재활성화 · 쿨다운 리셋.
+	 *
+	 *  ★ virtual 인 이유: ResetEntity_Implementation 이 이 함수를 부르므로
+	 *  (아래 .cpp), 자식(ASH_RLCharacter)이 여기에 정리를 얹지 못하면
+	 *  리셋 때 Pending 입력과 시야 기억이 비워지지 않는다. */
 	UFUNCTION(BlueprintCallable, Category="Combat")
-	void ResetForNewMatch();
+	virtual void ResetForNewMatch();
 
 	//~ ILearningAgentsEntityInterface ----------------------------------------
 	//

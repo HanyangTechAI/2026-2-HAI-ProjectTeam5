@@ -8,8 +8,12 @@
 #include "Engine/World.h"
 #include "Gun.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "LearningAgentsGym.h"
 #include "LearningAgentsGymsManager.h"
 #include "SH_Arena.h"
+#include "SH_RLCharacter.h"
+#include "SH_ScriptBotController.h"
+#include "SH_VisionComponent.h"
 
 ASH_RLDirector::ASH_RLDirector()
 {
@@ -202,6 +206,11 @@ void ASH_RLDirector::ReportThroughput(double RealElapsed, float SimElapsed, int3
 		UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector]  CROSS-GYM 누적    : 0"));
 	}
 
+	if (bReportCombat)
+	{
+		ReportCombat();
+	}
+
 	if (PreviousUnitActorCount >= 0 && UnitTotal > PreviousUnitActorCount)
 	{
 		UE_LOG(LogTemp, Error,
@@ -211,6 +220,239 @@ void ASH_RLDirector::ReportThroughput(double RealElapsed, float SimElapsed, int3
 			PreviousUnitActorCount, UnitTotal);
 	}
 	PreviousUnitActorCount = UnitTotal;
+}
+
+void ASH_RLDirector::ReportCombat() const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// ★ 이 누산기는 GatherAgentReward 가 ConsumeRewardAccumulators() 로 비운다.
+	//   학습 없이 돌리면 아무도 비우지 않으므로 여기 값은 **실행 시작부터의 누적**이다.
+	//   학습을 붙이면 구간 값이 되므로 해석이 달라진다 — 로그에 그걸 명시한다.
+	int32 Fired = 0;
+	int32 HitCount = 0;
+
+	int32 AliveBots = 0;
+	int32 BotsWithTarget = 0;
+
+	float FovDegrees = -1.0f;
+	bool  bLineOfSight = false;
+	bool  bFoundBot = false;
+
+	for (TActorIterator<ABase_Character> It(World); It; ++It)
+	{
+		ABase_Character* Unit = *It;
+		if (!Unit || !Unit->CombatStats)
+		{
+			continue;
+		}
+
+		Fired    += Unit->CombatStats->ShotsFiredAccum;
+		HitCount += Unit->CombatStats->ShotsHitAccum;
+
+		if (!Unit->bEntityEnabled || !Unit->CombatStats->IsAlive())
+		{
+			continue;
+		}
+
+		if (const ASH_RLCharacter* RLUnit = Cast<ASH_RLCharacter>(Unit))
+		{
+			if (RLUnit->Vision)
+			{
+				FovDegrees = RLUnit->Vision->FOVDegrees;
+			}
+		}
+
+		// 표적 보유 여부는 스크립트 봇만 알 수 있다 — 정책은 표적 개념이 없다.
+		if (const ASH_ScriptBotController* Bot = Cast<ASH_ScriptBotController>(Unit->GetController()))
+		{
+			++AliveBots;
+			bFoundBot = true;
+			bLineOfSight = Bot->bRequireLineOfSight;
+			if (Bot->GetCurrentTarget())
+			{
+				++BotsWithTarget;
+			}
+		}
+	}
+
+	const float HitRate = (Fired > 0) ? (100.0f * static_cast<float>(HitCount) / static_cast<float>(Fired)) : 0.0f;
+	UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector]  누적 사격/명중    : %d / %d  (명중률 %.1f%%)"),
+		Fired, HitCount, HitRate);
+
+	if (bFoundBot)
+	{
+		const float TargetRate = (AliveBots > 0)
+			? (100.0f * static_cast<float>(BotsWithTarget) / static_cast<float>(AliveBots)) : 0.0f;
+		UE_LOG(LogTemp, Display,
+			TEXT("[SH_RLDirector]  표적 보유 봇      : %d / %d  (%.1f%%)   시야 %.0f도 / LoS=%s"),
+			BotsWithTarget, AliveBots, TargetRate,
+			FovDegrees, bLineOfSight ? TEXT("켬") : TEXT("끔"));
+
+		// 표적이 없는 봇이 많으면 **왜** 없는지가 유일하게 중요한 정보다.
+		if (BotsWithTarget < AliveBots)
+		{
+			ReportVisionFailures();
+		}
+	}
+}
+
+void ASH_RLDirector::ReportVisionFailures() const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// 살아있는 유닛 전체를 한 번 모아 둔다 (아레나별 최근접 적을 찾기 위해).
+	TArray<ABase_Character*> Live;
+	for (TActorIterator<ABase_Character> It(World); It; ++It)
+	{
+		ABase_Character* Unit = *It;
+		if (Unit && Unit->bEntityEnabled && Unit->CombatStats && Unit->CombatStats->IsAlive())
+		{
+			Live.Add(Unit);
+		}
+	}
+
+	int32 Counts[6] = { 0, 0, 0, 0, 0, 0 };   // ESHVisionResult 순서
+	int32 NoCandidate = 0;
+	TMap<FName, int32> Blockers;
+	float RadiusSum = 0.0f;
+	int32 RadiusNum = 0;
+
+	int32 Sweeping = 0;
+	int32 DetailShown = 0;
+	float LostSum = 0.0f;
+	// 표본 3개의 조준 Yaw. 리포트 두 번을 비교하면 선회가 실제로 도는지 알 수 있다.
+	float SampleYaw[3] = { 0.0f, 0.0f, 0.0f };
+	int32 SampleNum = 0;
+
+	for (ABase_Character* Unit : Live)
+	{
+		const ASH_ScriptBotController* Bot = Cast<ASH_ScriptBotController>(Unit->GetController());
+		if (!Bot || Bot->GetCurrentTarget())
+		{
+			continue;   // 표적이 있는 봇은 진단 대상이 아니다
+		}
+
+		const USH_VisionComponent* Vision = Unit->FindComponentByClass<USH_VisionComponent>();
+		if (!Vision)
+		{
+			continue;
+		}
+
+		LostSum += Bot->GetTimeSinceTargetLost();
+		if (Bot->IsSweeping())
+		{
+			++Sweeping;
+		}
+		if (SampleNum < 3)
+		{
+			SampleYaw[SampleNum] = Bot->GetControlRotation().Yaw;
+			++SampleNum;
+		}
+
+		// 소속 아레나 중심으로부터의 거리 — 전진이 실제로 일어났는지 본다.
+		if (const ALearningAgentsGymBase* Gym = Unit->CachedGym)
+		{
+			RadiusSum += FVector::Dist2D(Unit->GetActorLocation(), Gym->GetActorLocation());
+			++RadiusNum;
+		}
+
+		// 가시성을 **무시하고** 같은 아레나의 최근접 적을 찾는다.
+		ABase_Character* Nearest = nullptr;
+		float BestDistSq = TNumericLimits<float>::Max();
+		for (ABase_Character* Other : Live)
+		{
+			if (Other == Unit || Other->CachedGym != Unit->CachedGym)
+			{
+				continue;
+			}
+			if (!UCombatStatsComponent::AreHostile(Unit, Other))
+			{
+				continue;
+			}
+			const float DistSq = FVector::DistSquared(Unit->GetActorLocation(), Other->GetActorLocation());
+			if (DistSq < BestDistSq)
+			{
+				BestDistSq = DistSq;
+				Nearest = Other;
+			}
+		}
+
+		if (!Nearest)
+		{
+			++NoCandidate;   // 이 아레나는 한쪽 팀이 전멸했다
+			continue;
+		}
+
+		FName Blocker;
+		const ESHVisionResult Result = Vision->ClassifyVisibility(Nearest, Blocker);
+		Counts[static_cast<int32>(Result)]++;
+		if (Result == ESHVisionResult::Occluded && Blocker != NAME_None)
+		{
+			Blockers.FindOrAdd(Blocker)++;
+		}
+
+		// 표본 몇 개는 기하를 그대로 찍는다 — 각도가 ±45 안에 들어오는데도
+		// OutsideFOV 가 나오면 검사가 틀린 것이고, 각도가 늘 크면 배치 문제다.
+		if (SampleNum <= 3 && DetailShown < 3)
+		{
+			++DetailShown;
+			const FVector ToEnemy = Nearest->GetActorLocation() - Unit->GetActorLocation();
+			const float EnemyYaw = ToEnemy.Rotation().Yaw;
+			const float AimYaw = Bot->GetControlRotation().Yaw;
+			UE_LOG(LogTemp, Display,
+				TEXT("[SH_RLDirector]    표본 %s: 거리 %.0f / 적방향 %.1f도 / 조준 %.1f도 / ")
+				TEXT("차이 %.1f도 / 판정 %d / 가린것 %s"),
+				*Unit->GetName(), ToEnemy.Size2D(), EnemyYaw, FRotator::NormalizeAxis(AimYaw),
+				FRotator::NormalizeAxis(EnemyYaw - AimYaw),
+				static_cast<int32>(Result), *Blocker.ToString());
+		}
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[SH_RLDirector]  표적 없는 이유    : 보임 %d / 시야각밖 %d / 가려짐 %d / ")
+		TEXT("사거리밖 %d / 미명중 %d / 무효 %d / 적없음 %d"),
+		Counts[(int32)ESHVisionResult::Visible],
+		Counts[(int32)ESHVisionResult::OutsideFOV],
+		Counts[(int32)ESHVisionResult::Occluded],
+		Counts[(int32)ESHVisionResult::OutOfRange],
+		Counts[(int32)ESHVisionResult::NoHit],
+		Counts[(int32)ESHVisionResult::Invalid],
+		NoCandidate);
+
+	if (RadiusNum > 0)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[SH_RLDirector]  아레나 중심 거리  : 평균 %.0f cm (스폰 반경 1200 — 전진했으면 줄어든다)"),
+			RadiusSum / RadiusNum);
+
+		UE_LOG(LogTemp, Display,
+			TEXT("[SH_RLDirector]  선회 탐색 중      : %d명 | 표적 상실 경과 평균 %.1f초 | ")
+			TEXT("표본 Yaw %.1f / %.1f / %.1f (리포트 간 변하지 않으면 선회가 안 도는 것)"),
+			Sweeping, LostSum / RadiusNum,
+			SampleYaw[0], SampleYaw[1], SampleYaw[2]);
+	}
+
+	// 가린 것이 무엇인지. 엄폐물인지 아군인지에 따라 대응이 완전히 다르다.
+	Blockers.ValueSort([](int32 A, int32 B) { return A > B; });
+	int32 Shown = 0;
+	for (const TPair<FName, int32>& Pair : Blockers)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector]    가린 것: %-28s %d회"),
+			*Pair.Key.ToString(), Pair.Value);
+		if (++Shown >= 5)
+		{
+			break;
+		}
+	}
 }
 
 void ASH_RLDirector::VerifyArenaLayout() const

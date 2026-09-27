@@ -6,6 +6,7 @@
 #include "Combat/CombatStatsComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -68,11 +69,30 @@ ASH_Arena::ASH_Arena()
 void ASH_Arena::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+
 	RebuildArenaGeometry();
+	// ★ 반드시 분리해서 부른다. 경계 생성을 꺼도 유닛 풀은 채워져야 한다.
+	RebuildEntityPool();
 }
 
 void ASH_Arena::RebuildArenaGeometry()
 {
+	// --- 수작업 형상 모드 ---------------------------------------------------
+	// C++ 벽은 BP 에서 삭제할 수 없으므로(Inherited) 숨기고 콜리전만 끈다.
+	// 바닥(SimpleGymFloor)은 건드리지 않는다 — BP 에서 크기를 직접 정하게 둔다.
+	if (!bAutoBuildBoundary)
+	{
+		for (UStaticMeshComponent* Wall : Walls)
+		{
+			if (Wall)
+			{
+				Wall->SetVisibility(false);
+				Wall->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			}
+		}
+		return;
+	}
+
 	// --- 바닥 ---------------------------------------------------------------
 	// GymsManager 는 첫 번째 Gym 의 GetGymExtents() 로 16개 전부의 격자 위치를 정한다.
 	// GetGymExtents 는 SimpleGymFloor 의 로컬 바운드 x 컴포넌트 스케일이므로,
@@ -112,32 +132,61 @@ void ASH_Arena::RebuildArenaGeometry()
 			0.5f * WallHeight));
 		Wall->SetRelativeRotation(FRotator(0.0f, AngleDeg + 90.0f, 0.0f));
 		Wall->SetRelativeScale3D(WallScale);
-	}
 
-	// --- 유닛 풀 ------------------------------------------------------------
-	if (EntitiesManager)
+		// bAutoBuildBoundary 를 껐다 켰을 때 되살린다.
+		Wall->SetVisibility(true);
+		Wall->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+}
+
+void ASH_Arena::RebuildEntityPool()
+{
+	if (!EntitiesManager)
 	{
-		EntitiesManager->Entities.Reset();
-
-		// 두 클래스가 모두 지정되기 전에는 비워 둔다 — 그렇지 않으면
-		// CheckEntityClasses() 가 매 프레임 Error 를 찍는다.
-		if (Team0UnitClass && Team1UnitClass)
-		{
-			auto MakeInfo = [this](const TSubclassOf<AActor>& UnitClass)
-			{
-				FLearningAgentsEntityInfo Info;
-				Info.EntityClass = UnitClass;
-				Info.EntitySpawnZOffset = SpawnZOffset;
-				// Min == Max. 이유는 UnitsPerTeam 주석 참조.
-				Info.EpisodeEntitySpawnCountMin = UnitsPerTeam;
-				Info.EpisodeEntitySpawnCountMax = UnitsPerTeam;
-				return Info;
-			};
-
-			EntitiesManager->Entities.Add(MakeInfo(Team0UnitClass));
-			EntitiesManager->Entities.Add(MakeInfo(Team1UnitClass));
-		}
+		return;
 	}
+
+	EntitiesManager->Entities.Reset();
+
+	// 두 클래스가 모두 지정되기 전에는 비워 둔다 — 그렇지 않으면
+	// CheckEntityClasses() 가 매 프레임 Error 를 찍는다.
+	if (!Team0UnitClass || !Team1UnitClass)
+	{
+		return;
+	}
+
+	auto MakeInfo = [this](const TSubclassOf<AActor>& UnitClass)
+	{
+		FLearningAgentsEntityInfo Info;
+		Info.EntityClass = UnitClass;
+		Info.EntitySpawnZOffset = SpawnZOffset;
+		// Min == Max. 이유는 UnitsPerTeam 주석 참조.
+		Info.EpisodeEntitySpawnCountMin = UnitsPerTeam;
+		Info.EpisodeEntitySpawnCountMax = UnitsPerTeam;
+		return Info;
+	};
+
+	EntitiesManager->Entities.Add(MakeInfo(Team0UnitClass));
+	EntitiesManager->Entities.Add(MakeInfo(Team1UnitClass));
+}
+
+void ASH_Arena::GetGymExtents(FVector& OutMinExtents, FVector& OutMaxExtents) const
+{
+	// 콜리전이 있는 컴포넌트 전체(바닥 + 벽 + 엄폐물)를 감싸는 로컬 박스.
+	//
+	// ★ bNonColliding=false 인 이유: 여기서 필요한 것은 "물리적으로 차지하는 범위" 다.
+	//   피치를 정하는 목적이 총알 누출과 아레나 겹침을 막는 것이므로, 콜리전 없는
+	//   장식 메시는 포함시키지 않는다. 에디터 전용 빌보드가 섞여 들어오는 것도 막는다.
+	const FBox Box = CalculateComponentsBoundingBoxInLocalSpace(/*bNonColliding=*/false);
+	if (Box.IsValid)
+	{
+		OutMinExtents = Box.Min;
+		OutMaxExtents = Box.Max;
+		return;
+	}
+
+	// 폴백: 바닥 하나만 본다 (부모 구현).
+	Super::GetGymExtents(OutMinExtents, OutMaxExtents);
 }
 
 void ASH_Arena::BeginPlay()
@@ -165,9 +214,62 @@ void ASH_Arena::BeginPlay()
 	OnGymInitialized.AddDynamic(this, &ASH_Arena::HandleGymInitialized);
 	OnPostGymReset.AddDynamic(this, &ASH_Arena::HandlePostGymReset);
 
+	// 엄폐물이 스폰 자리를 먹었는지 확인한다. 유닛이 아직 스폰되기 전이라
+	// 유닛끼리의 겹침은 잡히지 않고 순수하게 배치 실수만 잡힌다.
+	ValidateSpawnSlotsClear();
+
 	if (bDrawDebugOnBeginPlay)
 	{
 		DrawDebugArena(60.0f);
+	}
+}
+
+void ASH_Arena::ValidateSpawnSlotsClear() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// ABase_Character 의 기본 캡슐 치수. BP 에서 바꿨다면 여기도 맞춰야 한다.
+	const FCollisionShape Capsule = FCollisionShape::MakeCapsule(42.0f, 96.0f);
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(SHSpawnSlotCheck), /*bTraceComplex=*/false);
+	// ★ AddIgnoredActor(this) 를 쓰면 안 된다 — 엄폐물이 이 액터의 컴포넌트이므로
+	//   검사 대상 자체가 사라진다. 바닥만 콕 집어 무시한다.
+	// TObjectPtr 를 그대로 넘기면 raw-pointer / TWeakObjectPtr 오버로드가 모호해진다(C2668).
+	if (const UPrimitiveComponent* FloorComponent = SimpleGymFloor)
+	{
+		Params.AddIgnoredComponent(FloorComponent);
+	}
+
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		TArray<FTransform> Slots;
+		GetSpawnTransforms(Team, UnitsPerTeam, Slots);
+
+		for (int32 Index = 0; Index < Slots.Num(); ++Index)
+		{
+			const FVector Location = Slots[Index].GetLocation();
+
+			TArray<FOverlapResult> Overlaps;
+			if (!World->OverlapMultiByChannel(Overlaps, Location, FQuat::Identity,
+					ECC_Pawn, Capsule, Params))
+			{
+				continue;
+			}
+
+			for (const FOverlapResult& Overlap : Overlaps)
+			{
+				const UPrimitiveComponent* Comp = Overlap.GetComponent();
+				UE_LOG(LogTemp, Error,
+					TEXT("[SH_Arena] %s: 팀%d 슬롯 %d (%s) 가 %s 에 막혀 있다. ")
+					TEXT("BP_SHArena 에서 엄폐물을 옮기거나 SpawnRadius(%.0f) 를 조정할 것."),
+					*GetName(), Team, Index, *Location.ToCompactString(),
+					Comp ? *Comp->GetName() : TEXT("(알 수 없음)"), SpawnRadius);
+			}
+		}
 	}
 }
 

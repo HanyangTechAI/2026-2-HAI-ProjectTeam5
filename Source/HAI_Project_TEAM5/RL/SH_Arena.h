@@ -47,7 +47,26 @@ public:
 
 	//~ 형상 ------------------------------------------------------------------
 
-	/** 벽 안쪽 면까지의 반경(cm). 바닥 크기·벽 배치·클램프 반경이 전부 이 값에서 나온다.
+	/**
+	 *  켜면 ArenaRadius 에서 팔각형 벽·바닥을 계산해 배치한다 (기본 동작).
+	 *  끄면 C++ 벽 8개를 숨기고 콜리전을 끈다 — BP 에서 손으로 놓은 형상만 남는다.
+	 *
+	 *  ★ "지우기" 가 아니라 "숨기기 + 콜리전 끄기" 인 이유: 아래 Walls 는
+	 *  CreateDefaultSubobject 산물이라 BP 컴포넌트 트리에 **Inherited** 로 나오고,
+	 *  BP 에서는 삭제도 부모 변경도 할 수 없다.
+	 *
+	 *  ★ 기본값 true. BP_SHArena 를 처음 만들면 이 팔각형이 그대로 보이고,
+	 *  거기서부터 수작업으로 고쳐 나간다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|Arena")
+	bool bAutoBuildBoundary = true;
+
+	/** 벽 안쪽 면까지의 반경(cm). bAutoBuildBoundary 가 켜져 있으면
+	 *  바닥 크기·벽 배치·클램프 반경이 전부 이 값에서 나온다.
+	 *
+	 *  ★ 수작업 형상으로 넘어가면(bAutoBuildBoundary=false) 의미가 바뀐다 —
+	 *  "벽까지의 거리" 가 아니라 **안전 내접 반경**이다. ProjectPointToGym 이
+	 *  이 반경의 원판으로 클램프하므로 직접 그린 벽의 내접원보다 작게 유지할 것.
 	 *
 	 *  상한은 할인 지평이 정한다: gamma=0.995 @ 20Hz 이면 1/(1-gamma) = 200스텝 = 10초이고,
 	 *  MaxWalkSpeed 500cm/s 로 아레나를 가로지르는 시간이 그보다 길면 정책이
@@ -127,11 +146,30 @@ public:
 
 	//~ ALearningAgentsGymSimple -----------------------------------------------
 
-	/** NavMesh 를 쓰지 않는 순수 수학 클램프. 원판 안으로 당기고 Z 는 아레나 평면에 고정. */
+	/**
+	 *  NavMesh 를 쓰지 않는 순수 수학 클램프. 원판 안으로 당기고 Z 는 아레나 평면에 고정.
+	 *
+	 *  ★ 이것과 아래 GenerateRandomLocationInGym 은 **안전망일 뿐이다.**
+	 *  엔진에서 둘을 쓰는 곳은 엔티티 스폰의 랜덤 배치뿐이고
+	 *  (LearningAgentsEntitiesManagerComponent.cpp:227, 239),
+	 *  그 결과를 ApplySpawnSlots() 가 곧바로 고정 슬롯으로 덮어쓴다.
+	 *  수작업으로 직사각형 아레나를 그려도 내접원은 항상 그 안쪽이므로 여전히 유효하다.
+	 */
 	virtual FVector ProjectPointToGym(const FVector& InLocation) const override;
 
 	/** 원판 위 면적 균등 난수. */
 	virtual FVector GenerateRandomLocationInGym() const override;
+
+	/**
+	 *  격자 간격의 근거. **수작업 형상까지 포함한** 로컬 바운딩 박스를 돌려준다.
+	 *
+	 *  ★ 상속받은 구현은 SimpleGymFloor 하나의 로컬 바운드 x 스케일만 본다
+	 *  (LearningAgentsGymSimple.cpp:21-26). GymsManager 는 **첫 번째 Gym** 의 이 값으로
+	 *  아레나 사이 피치를 정하므로(LearningAgentsGymsManager.cpp:75, 80-82),
+	 *  바닥보다 넓게 벽을 그리면 아레나끼리 겹치고 AGun::Range(6000) 가 피치를 넘어
+	 *  총알이 옆 아레나로 샌다. 콜리전이 있는 컴포넌트 전체를 감싸서 그걸 막는다.
+	 */
+	virtual void GetGymExtents(FVector& OutMinExtents, FVector& OutMaxExtents) const override;
 
 	// NOTE: GenerateRandomRotationInGym 은 덮어쓰지 않는다.
 	//       인자로 위치를 받지 않아 "중심을 바라보게" 만들 수 없다.
@@ -195,8 +233,31 @@ protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;
 
-	/** 바닥 스케일 · 벽 8개 배치 · EntitiesManager 설정을 ArenaRadius 에서 다시 계산한다. */
+	/** 바닥 스케일 · 벽 8개 배치를 ArenaRadius 에서 다시 계산한다.
+	 *  bAutoBuildBoundary 가 꺼져 있으면 C++ 벽을 숨기고 아무것도 계산하지 않는다. */
 	void RebuildArenaGeometry();
+
+	/**
+	 *  유닛 풀(EntitiesManager->Entities)을 UnitClass/UnitsPerTeam 에서 다시 채운다.
+	 *
+	 *  ★ RebuildArenaGeometry 와 분리해 둔 이유: 경계 생성을 껐을 때도 **반드시** 돌아야 한다.
+	 *  한 함수에 두면 조기 반환에 같이 걸려서 유닛이 하나도 스폰되지 않고,
+	 *  그런데 에러도 경고도 나지 않는다.
+	 */
+	void RebuildEntityPool();
+
+	/**
+	 *  스폰 슬롯이 엄폐물·벽에 막혔는지 검사해 Error 로그를 남긴다.
+	 *
+	 *  엄폐물을 넣으면 유닛이 블록 안에 스폰될 수 있다. 캡슐이 밀려나거나 끼는데
+	 *  화면으로는 잘 보이지 않고 학습만 조용히 망가진다.
+	 *
+	 *  ★ 한계: 스폰 지터(SpawnAngleJitterDegrees / SpawnRadiusJitter)는 검사하지 않는다.
+	 *  BeginPlay 시점에는 GymsManager 가 아직 RandomStream 을 주입하지 않았고
+	 *  (LearningAgentsGymsManager.cpp:86-89 순서), 지터 범위를 전부 훑는 것은 과하다.
+	 *  지터를 쓰면 DrawDebugArena 로 눈으로 확인할 것.
+	 */
+	void ValidateSpawnSlotsClear() const;
 
 	/** 팔각형 벽. 개수는 고정(생성자에서 만들어야 하므로). */
 	static constexpr int32 NumWalls = 8;
