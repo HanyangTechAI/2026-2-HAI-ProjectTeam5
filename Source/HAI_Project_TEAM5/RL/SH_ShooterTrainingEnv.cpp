@@ -45,6 +45,8 @@ void USH_ShooterTrainingEnv::GatherAgentReward_Implementation(float& OutReward, 
 	Reward += DamageDealtWeight * (Stats->DamageDealtAccum / 100.0f);
 	Reward -= DamageTakenWeight * (Stats->DamageTakenAccum / 100.0f);
 	Reward += KillBonus * static_cast<float>(Stats->KillsAccum);
+	// 누산기를 비우기 전에 더해 명중 보너스가 결정당 한 번만 반영되게 한다.
+	Reward += HitBonus * static_cast<float>(Stats->ShotsHitAccum);
 
 	const int32 Missed = FMath::Max(0, Stats->ShotsFiredAccum - Stats->ShotsHitAccum);
 	Reward -= MissWeight * static_cast<float>(Missed);

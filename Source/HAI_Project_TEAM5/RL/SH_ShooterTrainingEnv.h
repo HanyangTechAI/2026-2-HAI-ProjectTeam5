@@ -42,6 +42,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SH|Reward")
 	float MissWeight = 0.05f;
 
+	/** 명중 1발마다 추가하는 보상. */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward")
+	float HitBonus = 0.1f;
+
 	/** 킬 보너스. 오버킬이 보상에 안 잡히므로 마무리에 값을 붙여 준다. */
 	UPROPERTY(EditAnywhere, Category = "SH|Reward")
 	float KillBonus = 0.5f;
