@@ -27,8 +27,9 @@ namespace SHArena
 
 ASH_Arena::ASH_Arena()
 {
-	PrimaryActorTick.bCanEverTick = false;
-	PrimaryActorTick.bStartWithTickEnabled = false;
+	// 라운드 판정과 축소 구역 때문에 틱이 필요하다. 아레나 16개 x 유닛 20 이라 비용은 작다.
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = true;
 
 	// 베이스 생성자가 RootComponent 와 SimpleGymFloor 를 이미 만들었다.
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> PlaneMesh(SHArena::PlaneMeshPath);
@@ -278,11 +279,235 @@ void ASH_Arena::HandleGymInitialized()
 	// 초기화 때 한 번만 검사한다 — 매 리셋마다 찍으면 로그가 도배된다.
 	ValidateTeamAuthoring();
 	ApplySpawnSlots();
+	BeginRound();
 }
 
 void ASH_Arena::HandlePostGymReset()
 {
 	ApplySpawnSlots();
+	BeginRound();
+}
+
+//~ 라운드 -------------------------------------------------------------------
+
+bool ASH_Arena::IsUnitAlive(const ABase_Character* Unit)
+{
+	return Unit && Unit->bEntityEnabled && Unit->CombatStats && Unit->CombatStats->IsAlive();
+}
+
+void ASH_Arena::BeginRound()
+{
+	const UWorld* World = GetWorld();
+	RoundStartTime = World ? World->GetTimeSeconds() : 0.0f;
+	RoundEnd = ESHRoundEnd::None;
+	FirstDamageTime = -1.0f;
+	ZoneDamageTimer = 0.0f;
+}
+
+void ASH_Arena::EndRound(ESHRoundEnd End)
+{
+	RoundEnd = End;
+
+	FSHRoundRecord Record;
+	Record.End = End;
+	Record.Duration = GetRoundElapsed();
+	Record.FirstDamageTime = FirstDamageTime;
+
+	// 리포트가 돌지 않는 환경(에디터 미리보기 등)에서 무한히 쌓이지 않게.
+	if (PendingRoundRecords.Num() < 4096)
+	{
+		PendingRoundRecords.Add(Record);
+	}
+}
+
+float ASH_Arena::GetRoundElapsed() const
+{
+	const UWorld* World = GetWorld();
+	return World ? FMath::Max(0.0f, World->GetTimeSeconds() - RoundStartTime) : 0.0f;
+}
+
+float ASH_Arena::GetZoneRadius() const
+{
+	if (!bShrinkZone)
+	{
+		return ArenaRadius;
+	}
+
+	const float Elapsed = GetRoundElapsed();
+	if (Elapsed <= ZoneStartSeconds)
+	{
+		return ArenaRadius;
+	}
+
+	const float Alpha = FMath::Clamp(
+		(Elapsed - ZoneStartSeconds) / FMath::Max(ZoneShrinkSeconds, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+	return FMath::Lerp(ArenaRadius, FMath::Min(ZoneFinalRadius, ArenaRadius), Alpha);
+}
+
+float ASH_Arena::GetRoundOutcome(int32 Team) const
+{
+	switch (RoundEnd)
+	{
+	case ESHRoundEnd::Team0Wins:
+		return (Team == 0) ? 1.0f : -1.0f;
+	case ESHRoundEnd::Team1Wins:
+		return (Team == 1) ? 1.0f : -1.0f;
+	case ESHRoundEnd::Timeout:
+	case ESHRoundEnd::MutualWipe:
+		// ★ 승자 없음. TFT 와 같이 양쪽 모두 패배로 본다 — 대치를 균형점에서 빼내는 규칙이다.
+		return bTimeoutIsLossForBoth ? -1.0f : 0.0f;
+	default:
+		return 0.0f;
+	}
+}
+
+int32 ASH_Arena::GetAliveCount(int32 Team) const
+{
+	return (Team == 0 || Team == 1) ? AliveCount[Team] : 0;
+}
+
+int32 ASH_Arena::GetTeamSize(int32 Team) const
+{
+	return (Team == 0 || Team == 1) ? TeamUnits[Team].Num() : 0;
+}
+
+const TArray<TWeakObjectPtr<ABase_Character>>& ASH_Arena::GetTeamUnits(int32 Team) const
+{
+	static const TArray<TWeakObjectPtr<ABase_Character>> Empty;
+	return (Team == 0 || Team == 1) ? TeamUnits[Team] : Empty;
+}
+
+void ASH_Arena::ConsumeRoundRecords(TArray<FSHRoundRecord>& OutRecords)
+{
+	OutRecords.Append(PendingRoundRecords);
+	PendingRoundRecords.Reset();
+}
+
+float ASH_Arena::ConsumeZoneDamage(int32 Team)
+{
+	if (Team != 0 && Team != 1)
+	{
+		return 0.0f;
+	}
+	const float Total = ZoneDamageTotal[Team];
+	ZoneDamageTotal[Team] = 0.0f;
+	return Total;
+}
+
+void ASH_Arena::ApplyZoneDamage(float DeltaSeconds)
+{
+	ZoneDamageTimer += DeltaSeconds;
+	if (ZoneDamageTimer < ZoneDamageInterval)
+	{
+		return;
+	}
+	const float Dt = ZoneDamageTimer;
+	ZoneDamageTimer = 0.0f;
+
+	const float Radius = GetZoneRadius();
+	if (Radius >= ArenaRadius)
+	{
+		return;   // 아직 줄지 않았다
+	}
+
+	const FVector Center = GetActorLocation();
+	const float RadiusSq = Radius * Radius;
+	const float Amount = ZoneDamagePerSecond * Dt;
+
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		for (const TWeakObjectPtr<ABase_Character>& Weak : TeamUnits[Team])
+		{
+			ABase_Character* Unit = Weak.Get();
+			if (!IsUnitAlive(Unit))
+			{
+				continue;
+			}
+			if (FVector::DistSquaredXY(Unit->GetActorLocation(), Center) <= RadiusSq)
+			{
+				continue;
+			}
+
+			// ★ 가해자 nullptr. 받은 피해로는 누산되지만(보상에 들어간다) 누구의 준 피해도
+			//   아니다. ASH_RLCharacter 의 피격 기억은 가해자가 없으면 지난 기억을 유지한다.
+			ZoneDamageTotal[Team] += Unit->CombatStats->ApplyDamage(Amount, nullptr);
+		}
+	}
+}
+
+void ASH_Arena::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		int32 Alive = 0;
+		for (const TWeakObjectPtr<ABase_Character>& Weak : TeamUnits[Team])
+		{
+			Alive += IsUnitAlive(Weak.Get()) ? 1 : 0;
+		}
+		AliveCount[Team] = Alive;
+	}
+
+	// 끝난 라운드는 학습 환경이 아레나를 리셋할 때까지 그대로 둔다.
+	// ★ 여기서 스스로 리셋하면 안 된다. 리셋은 완료 신호(Termination)를 처리한 뒤
+	//   USH_ShooterTrainingEnv::ResetAgentEpisode 가 해야 결과 보상과 리셋 순서가 맞는다.
+	if (RoundEnd != ESHRoundEnd::None)
+	{
+		return;
+	}
+
+	// 유닛이 없는 아레나(레벨에 편집용으로 놓은 인스턴스 등)는 판정하지 않는다.
+	if (TeamUnits[0].Num() == 0 || TeamUnits[1].Num() == 0)
+	{
+		return;
+	}
+
+	const float Elapsed = GetRoundElapsed();
+
+	if (FirstDamageTime < 0.0f)
+	{
+		for (int32 Team = 0; Team < 2 && FirstDamageTime < 0.0f; ++Team)
+		{
+			for (const TWeakObjectPtr<ABase_Character>& Weak : TeamUnits[Team])
+			{
+				const ABase_Character* Unit = Weak.Get();
+				if (Unit && Unit->CombatStats && Unit->CombatStats->CurrentHP < Unit->CombatStats->MaxHP)
+				{
+					FirstDamageTime = Elapsed;
+					break;
+				}
+			}
+		}
+	}
+
+	const bool bWiped0 = AliveCount[0] == 0;
+	const bool bWiped1 = AliveCount[1] == 0;
+	if (bWiped0 && bWiped1)
+	{
+		EndRound(ESHRoundEnd::MutualWipe);
+		return;
+	}
+	if (bWiped1)
+	{
+		EndRound(ESHRoundEnd::Team0Wins);
+		return;
+	}
+	if (bWiped0)
+	{
+		EndRound(ESHRoundEnd::Team1Wins);
+		return;
+	}
+	if (Elapsed >= RoundTimeLimitSeconds)
+	{
+		EndRound(ESHRoundEnd::Timeout);
+		return;
+	}
+
+	if (bShrinkZone)
+	{
+		ApplyZoneDamage(DeltaSeconds);
+	}
 }
 
 void ASH_Arena::CollectUnits(int32 Team, TArray<ABase_Character*>& OutUnits) const
@@ -339,6 +564,14 @@ void ASH_Arena::ApplySpawnSlots()
 	{
 		TArray<ABase_Character*> Units;
 		CollectUnits(Team, Units);
+
+		// 라운드 판정과 관측이 매 프레임 쓰는 캐시. 여기서만 월드를 훑는다.
+		TeamUnits[Team].Reset(Units.Num());
+		for (ABase_Character* Unit : Units)
+		{
+			TeamUnits[Team].Add(Unit);
+		}
+
 		if (Units.Num() == 0)
 		{
 			continue;

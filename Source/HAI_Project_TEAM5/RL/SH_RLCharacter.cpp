@@ -28,6 +28,9 @@ void ASH_RLCharacter::BeginPlay()
 	{
 		// 멀티캐스트라 base 의 HandleDeath 와 둘 다 불린다. base 가 먼저다.
 		CombatStats->OnDeath.AddDynamic(this, &ASH_RLCharacter::HandleRLDeath);
+
+		// 피격 방향 기억. base 는 OnDamaged 에 아무것도 등록하지 않는다.
+		CombatStats->OnDamaged.AddDynamic(this, &ASH_RLCharacter::HandleRLDamaged);
 	}
 
 	// 시야 센서와 총의 기하가 어긋나면 "보이는데 안 맞는" 구간이 생기고
@@ -130,6 +133,11 @@ void ASH_RLCharacter::ResetForNewMatch()
 	{
 		Vision->ResetMemory();
 	}
+
+	// ★ 피격 기억도 같이 비운다. 안 비우면 지난 판에서 맞은 방향을 보고 새 판을 시작한다 —
+	//   유닛이 고정 슬롯으로 되돌아가므로 그 방향은 아무 의미가 없는 값이다.
+	LastHitSourceLocation = FVector::ZeroVector;
+	LastHitTime = -1000.0f;
 }
 
 void ASH_RLCharacter::HandleRLDeath(AActor* /*Victim*/, AActor* /*Causer*/)
@@ -137,4 +145,59 @@ void ASH_RLCharacter::HandleRLDeath(AActor* /*Victim*/, AActor* /*Causer*/)
 	// base 가 이미 이동을 멈추고 콜리전을 껐다. 의도까지 지워서
 	// 부활 전에 Tick 이 한 프레임이라도 밀어내지 않게 한다.
 	ClearPendingInput();
+}
+
+void ASH_RLCharacter::HandleRLDamaged(AActor* /*Victim*/, float /*Amount*/, AActor* Causer)
+{
+	// ★ Causer 가 없으면 **지난 기억을 유지한다.** 0 으로 덮으면 "정면에서 맞았다" 가 되어
+	//   틀린 방향을 가르친다. AGun 은 항상 소유 액터를 넘기므로(Gun.cpp:172) 보통 유효하다.
+	if (!Causer)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	LastHitSourceLocation = Causer->GetActorLocation();
+	LastHitTime = World->GetTimeSeconds();
+}
+
+float ASH_RLCharacter::GetTimeSinceLastHit() const
+{
+	const UWorld* World = GetWorld();
+
+	// 한 번도 안 맞았으면 지평값 = "오래 전" 포화 신호. 0 을 돌려주면 반대 뜻이 된다.
+	if (!World || LastHitTime < 0.0f)
+	{
+		return HitMemoryHorizonSeconds;
+	}
+
+	// USH_VisionComponent::GetTimeSinceSeen 과 같은 모양으로 클램프한다 —
+	// 클램프하지 않으면 정규화 Scale 을 한참 넘는 값이 신경망에 들어간다.
+	return FMath::Clamp(World->GetTimeSeconds() - LastHitTime, 0.0f, HitMemoryHorizonSeconds);
+}
+
+float ASH_RLCharacter::GetLastHitRelativeAngleDeg() const
+{
+	if (LastHitTime < 0.0f)
+	{
+		return 0.0f;
+	}
+
+	FVector ToSource = LastHitSourceLocation - GetActorLocation();
+	ToSource.Z = 0.0f;
+	if (ToSource.IsNearlyZero())
+	{
+		return 0.0f;
+	}
+
+	// ★ 몸통 회전이 아니라 **컨트롤 회전** 기준이다. 부채꼴 중심 · 조준 · 이동이 모두
+	//   컨트롤 회전을 쓰므로 여기서도 같아야 한다. 몸통은 컨트롤 회전을 뒤늦게 따라오므로
+	//   그걸 쓰면 관측된 방위가 실제 조준선과 어긋난다.
+	const float SourceYaw = ToSource.Rotation().Yaw;
+	return FRotator::NormalizeAxis(SourceYaw - GetControlRotation().Yaw);
 }

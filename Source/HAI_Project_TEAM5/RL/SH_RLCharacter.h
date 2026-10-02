@@ -66,6 +66,58 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SH|RL")
 	void ClearPendingInput();
 
+	//~ 피격 기억 — 엄폐를 학습 가능하게 만드는 유일한 관측 ----------------------
+
+	/**
+	 *  ★ 왜 필요한가.
+	 *
+	 *  부채꼴 센서는 FOVDegrees(90도) 안만 본다. 뒤나 옆에서 쏘는 적은 관측에
+	 *  **전혀 나타나지 않는다.** 누가 자기를 쏘는지 모르는데 그 방향을 피할 수는 없으므로,
+	 *  이 관측이 없으면 엄폐는 원리적으로 학습 불가능하다.
+	 *  2026-10-01 실측: 받은 피해가 결정 1k당 958 → 1041 로 **오히려 늘었다.**
+	 *
+	 *  ★ 왜 방향이 아니라 **위치**를 저장하는가.
+	 *
+	 *  방향만 저장하면 자신이 **움직여도** 기억된 위협 방향이 그대로다. 엄폐물 뒤로
+	 *  이동한 뒤에는 그 방향이 틀린 값이 된다. 위치를 저장하면 현재 자기 위치에서
+	 *  매번 방위를 다시 계산하므로 이동과 정합한다.
+	 *  (ASH_ScriptBotController::LastKnownAimPoint 와 같은 방식이다.)
+	 *
+	 *  ★ 거리는 관측에 **주지 않는다.** 부분 관측 설계의 핵심이 "적 좌표를 주지 않는 것"
+	 *  이고(PLAN.md 의 Part 4 폐기 이유), 엄폐 판단에는 방위와 경과 시간으로 충분하다.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SH|RL")
+	FVector LastHitSourceLocation = FVector::ZeroVector;
+
+	/** 마지막 피격 시각(월드 초). 한 번도 안 맞았으면 음수다. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SH|RL")
+	float LastHitTime = -1000.0f;
+
+	/**
+	 *  피격 기억 지평(초). GetTimeSinceLastHit 이 이 값으로 클램프한다.
+	 *
+	 *  ★ USH_ShooterInteractor::HitMemoryHorizonSeconds 와 같아야 관측이 0~1 로 떨어진다.
+	 *  ASH_CombatTrainer::Assemble 이 유닛에서 읽어 인터랙터에 맞춰 준다 —
+	 *  USH_VisionComponent::MemoryHorizonSeconds 와 같은 구조다.
+	 *
+	 *  ★ 시야 기억(3초)보다 길게 둔다. 맞았다는 사실은 적을 놓친 것보다 오래 유효하다 —
+	 *  엄폐물 뒤로 돌아가 자리를 잡는 데 걸리는 시간을 덮어야 한다.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SH|RL", meta = (ClampMin = "0.1"))
+	float HitMemoryHorizonSeconds = 5.0f;
+
+	/** 마지막 피격 이후 경과 초. HitMemoryHorizonSeconds 로 클램프된다.
+	 *  한 번도 안 맞았으면 지평값(= "오래 전" 포화 신호)을 돌려준다. */
+	UFUNCTION(BlueprintPure, Category = "SH|RL")
+	float GetTimeSinceLastHit() const;
+
+	/**
+	 *  마지막 피격 지점의 **현재 조준선 기준** 부호 있는 방위(도, -180 … +180).
+	 *  0 = 정면, 양수 = 오른쪽. 한 번도 안 맞았으면 0.
+	 */
+	UFUNCTION(BlueprintPure, Category = "SH|RL")
+	float GetLastHitRelativeAngleDeg() const;
+
 	//~ 학습 처리량 ------------------------------------------------------------
 
 	/**
@@ -105,4 +157,8 @@ protected:
 	/** base 의 HandleDeath 와 **별개로** OnDeath 에 추가 등록된다. */
 	UFUNCTION()
 	void HandleRLDeath(AActor* Victim, AActor* Causer);
+
+	/** OnDamaged 에 등록된다. 피격 지점과 시각을 기억한다. */
+	UFUNCTION()
+	void HandleRLDamaged(AActor* Victim, float Amount, AActor* Causer);
 };

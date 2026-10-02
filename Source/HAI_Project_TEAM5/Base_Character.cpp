@@ -51,7 +51,8 @@ void ABase_Character::BeginPlay()
 
 void ABase_Character::HandleDeath(AActor* Victim, AActor* Causer)
 {
-	UE_LOG(LogTemp, Display, TEXT("[%s] 사망 — 가해자 %s"),
+	// Verbose: 정식 라운드는 사망이 라운드당 10~20회라 Display 면 로그가 수백 MB 가 된다.
+	UE_LOG(LogTemp, Verbose, TEXT("[%s] 사망 — 가해자 %s"),
 		*GetName(), Causer ? *Causer->GetName() : TEXT("(없음)"));
 
 	// 총알이 시체를 통과하도록. 리셋이 되돌린다.

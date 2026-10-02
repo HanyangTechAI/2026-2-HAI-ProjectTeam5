@@ -9,6 +9,7 @@
 #include "LearningAgentsTrainer.h"
 #include "SH_CombatTrainer.generated.h"
 
+class ASH_Arena;
 class ASH_RLCharacter;
 class ULearningAgentsCritic;
 class ULearningAgentsInteractor;
@@ -76,6 +77,37 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SH|RL|Training", meta = (ClampMin = "0"))
 	int32 Seed = 1234;
 
+	/**
+	 *  정책이 갱신될 때마다 전 에이전트를 리셋할지(RunTraining 의 4번째 인자).
+	 *
+	 *  ★ 기본 false. true 면 갱신 순간 열려 있던 에피소드를 **버린다**.
+	 *  게더 1회(16,384스텝)는 에이전트 160 에서 시뮬레이션 5.1초, 320 에서 2.6초 분량이라
+	 *  20~45초짜리 라운드는 끝까지 갈 수 없고 통째로 버려진다.
+	 *  false 면 라운드는 MaxEpisodeStepNum 단위로 Truncation 되고 세계는 이어진다.
+	 *  대가: 갱신을 걸친 에피소드 조각에 한 번 전 정책의 데이터가 섞인다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|Training")
+	bool bResetAgentsOnUpdate = false;
+
+	/**
+	 *  self-play. 켜면 조립 직전에 아레나 유닛 중 RL 컨트롤러가 아닌 것(팀 1 의 스크립트 봇)의
+	 *  컨트롤러를 ASH_RLBotController 로 바꿔 끼운다. 두 팀이 같은 정책을 공유한다.
+	 *
+	 *  ★ 에셋(BP_Unit_Team1 의 AIControllerClass)을 고치지 않는다. 실행 인자 하나로 1단계와
+	 *  self-play 를 오갈 수 있고, 대치 A/B 실험을 같은 빌드로 돌릴 수 있다.
+	 *  유닛은 풀에서 재사용되고 Enable/Disable 이 빙의를 건드리지 않으므로 교체가 유지된다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|Training")
+	bool bSelfPlay = false;
+
+	/**
+	 *  self-play 일 때 게더당 기록 스텝 수.
+	 *  ★ 16,384 는 에이전트 320 에서 시뮬레이션 2.6초 분량이라 갱신(약 5초) 시간이 지배한다.
+	 *  65,536 이면 약 10초 분량. 갱신 1회 비용은 미니배치 크기로 정해져 크게 늘지 않는다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|Training", meta = (ClampMin = "1024"))
+	int32 SelfPlayRecordedSteps = 65536;
+
 	/** 벽시계 기준 이 시간이 지나면 학습을 끝낸다. 0 이면 무제한.
 	 *  헤드리스(-game) 실행을 스스로 끝내기 위한 것이다. */
 	UPROPERTY(EditAnywhere, Category = "SH|RL|Training", meta = (ClampMin = "0.0"))
@@ -109,6 +141,9 @@ public:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ASH_RLCharacter>> Agents;
 
+	/** 유닛이 있는 아레나. 라운드 지표를 모은다. */
+	TArray<TWeakObjectPtr<ASH_Arena>> Arenas;
+
 	virtual void Tick(float DeltaSeconds) override;
 
 protected:
@@ -125,6 +160,17 @@ protected:
 	bool ValidateUnitSchema(const TArray<ASH_RLCharacter*>& Units) const;
 
 	void Report(double RealElapsed);
+
+	/**
+	 *  결정 직후 등록된 에이전트의 인코딩 관측 · 정책 메모리에서 NaN / ±∞ / |x| > 1e6 을 찾아 기록한다.
+	 *
+	 *  ★ 2026-10-02 크래시 조사용. "MaxIdx != INDEX_NONE" 는 로짓이 NaN 일 때 난다.
+	 *  메모리(GRU)가 먼저 오염되면 다음 결정에서 크래시하므로, 여기서 한 스텝 먼저 잡힌다.
+	 *  엔진은 리셋된 에이전트의 인코딩 관측을 FLT_MAX 표식값으로 채우므로(LearningAgentsPolicy.cpp
+	 *  OnAgentsReset), 결정 직후에 그 값이 남아 있으면 그것도 이상이다.
+	 */
+	void ScanForNonFinite();
+
 
 private:
 	FLearningAgentsCommunicator Communicator;
@@ -150,6 +196,27 @@ private:
 	double AliveAccumulator = 0.0;
 	double VisibleAccumulator = 0.0;
 	int32 MetricSampleCount = 0;
+
+	/** 살아 있는 RL 유닛의 최근접 (살아 있는) 적까지 거리 합과 표본 수.
+	 *  ★ 대치 감지 지표. 서로 버티면 이 값이 커진다. */
+	double NearestEnemyDistanceSum = 0.0;
+	int64 NearestEnemySamples = 0;
+
+	/** RL 에이전트가 속한 팀(비트). 1단계는 팀 0 만, self-play 는 둘 다. */
+	int32 AgentTeamMask = 0;
+
+	/** 등록된 에이전트 id (조립 때 고정). ScanForNonFinite 가 쓴다. */
+	TArray<int32> AgentIds;
+	int32 NonFiniteReports = 0;
+
+	/** 커맨드라인 오버라이드(조립 때 아레나·환경에 적용). 음수 = 지정 안 됨. */
+	int32 RoundRulesOverride = -1;
+	float RoundTimeOverride = -1.0f;
+	float TeamSpiritOverride = -1.0f;
+	float OutcomeOverride = -1.0f;
+	int32 RoundRampOverride = -1;
+	int32 BufferOverride = -1;
+	int32 GradClipOverride = -1;
 
 	/** 구간 누적 사격/명중. Gun 이 기록하고 여기서 차분을 낸다. */
 	int64 ShotsFiredTotal = 0;

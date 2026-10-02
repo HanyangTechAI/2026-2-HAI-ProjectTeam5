@@ -240,8 +240,14 @@ void ASH_ScriptBotController::Tick(float DeltaTime)
 	const FVector Origin = Self->GetActorLocation() + FVector(0.0f, 0.0f, MuzzleHeight);
 
 	// --- 표적 갱신 (ReactionDelay 마다) --------------------------------------
+	// ★ 표적이 없을 때도 ReactionDelay 를 지킨다.
+	//   전에는 `|| !CurrentTarget.IsValid()` 가 붙어 있어서, 표적을 못 잡은 봇은
+	//   **매 프레임** FindNearestHostile 을 돌렸다. 그 함수는 TActorIterator 로 월드
+	//   전체(유닛 320개)를 훑고 개선 후보마다 시야 레이를 쏜다.
+	//   실측 조건(봇 160명, 대부분 표적 없음, 60fps)에서 프레임당 트레이스가
+	//   1,600회 규모였다. ReactionDelay=0.25s 면 15배 줄어든다.
 	TimeSinceRetarget += DeltaTime;
-	if (TimeSinceRetarget >= ReactionDelay || !CurrentTarget.IsValid())
+	if (TimeSinceRetarget >= ReactionDelay)
 	{
 		TimeSinceRetarget = 0.0f;
 		CurrentTarget = FindNearestHostile(Self);

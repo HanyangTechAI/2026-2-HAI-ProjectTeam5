@@ -7,6 +7,7 @@
 #include "Gun.h"
 #include "LearningAgentsActions.h"
 #include "LearningAgentsObservations.h"
+#include "SH_Arena.h"
 #include "SH_RLCharacter.h"
 #include "SH_VisionComponent.h"
 
@@ -26,8 +27,17 @@ namespace
 	const FName Tag_EnemyAngle (TEXT("EnemyAngle"));
 	const FName Tag_EnemyDepth (TEXT("EnemyDepth"));
 	const FName Tag_Memory     (TEXT("Memory"));
+	const FName Tag_Hit        (TEXT("Hit"));
+	const FName Tag_TimeSinceHit(TEXT("TimeSinceHit"));
+	const FName Tag_HitAngle   (TEXT("HitAngle"));
 	const FName Tag_TimeSince  (TEXT("TimeSince"));
 	const FName Tag_LastAngle  (TEXT("LastAngle"));
+	const FName Tag_Team         (TEXT("Team"));
+	const FName Tag_AlliesAlive  (TEXT("AlliesAlive"));
+	const FName Tag_EnemiesAlive (TEXT("EnemiesAlive"));
+	const FName Tag_RoundProgress(TEXT("RoundProgress"));
+	const FName Tag_ZoneRadius   (TEXT("ZoneRadius"));
+	const FName Tag_ZoneMargin   (TEXT("ZoneMargin"));
 	const FName Tag_Self       (TEXT("Self"));
 	const FName Tag_HPRatio    (TEXT("HPRatio"));
 	const FName Tag_CanFire    (TEXT("CanFire"));
@@ -46,6 +56,39 @@ namespace
 		-FVector::RightVector,
 		FVector::RightVector
 	};
+}
+
+void USH_ShooterInteractor::ConsumeActionStats(FActionStats& OutStats)
+{
+	OutStats = ActionStats;
+	ActionStats = FActionStats();
+}
+
+namespace
+{
+	/**
+	 *  관측값이 유한하지 않으면 0 으로 바꾸고 기록한다.
+	 *
+	 *  ★ 2026-10-02 크래시 조사용. 엔진의 이산 행동 샘플러는 로짓이 NaN 이면
+	 *  "MaxIdx != INDEX_NONE" 체크에 걸려 프로세스가 죽는다. 원인이 관측이라면 여기서 막히고
+	 *  어느 필드인지 남는다. 로그는 처음 50건만.
+	 */
+	float SanitizeObservation(const float Value, const TCHAR* Field, const int32 AgentId)
+	{
+		if (FMath::IsFinite(Value))
+		{
+			return Value;
+		}
+		static int32 Reported = 0;
+		if (Reported < 50)
+		{
+			++Reported;
+			UE_LOG(LogTemp, Error,
+				TEXT("[SH_ShooterInteractor] 비유한 관측값 — 에이전트 %d, 필드 %s, 값 %f. 0 으로 바꿔 넣는다."),
+				AgentId, Field, Value);
+		}
+		return 0.0f;
+	}
 }
 
 ASH_RLCharacter* USH_ShooterInteractor::ResolveUnit(const int32 AgentId) const
@@ -97,15 +140,36 @@ void USH_ShooterInteractor::SpecifyAgentObservation_Implementation(
 	Memory.Add(Tag_TimeSince, O::SpecifyFloatObservation(InObservationSchema, TimeNormalization, true, Tag_TimeSince));
 	Memory.Add(Tag_LastAngle, O::SpecifyAngleObservation(InObservationSchema,                    true, Tag_LastAngle));
 
+	// --- 피격 기억: 후방 위협을 담는 유일한 관측 ------------------------------
+	// Scale 이 ASH_RLCharacter::HitMemoryHorizonSeconds 와 같아야 0~1 로 떨어진다.
+	FLearningAgentsFloatObservationNormalizationSettings HitTimeNormalization;
+	HitTimeNormalization.Scale = HitMemoryHorizonSeconds;
+
+	TMap<FName, FLearningAgentsObservationSchemaElement> Hit;
+	Hit.Add(Tag_TimeSinceHit, O::SpecifyFloatObservation(InObservationSchema, HitTimeNormalization, true, Tag_TimeSinceHit));
+	Hit.Add(Tag_HitAngle,     O::SpecifyAngleObservation(InObservationSchema,                       true, Tag_HitAngle));
+
 	// --- 자신 ---------------------------------------------------------------
 	TMap<FName, FLearningAgentsObservationSchemaElement> Self;
 	Self.Add(Tag_HPRatio, O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_HPRatio));
 	Self.Add(Tag_CanFire, O::SpecifyBoolObservation (InObservationSchema,     true, Tag_CanFire));
 
+	// --- 팀 · 라운드: 죽은 에이전트에게도 의미가 있는 유일한 관측 -----------------
+	// ★ 사망 마스크로 죽은 에이전트가 라운드 끝까지 남으므로, 크리틱이 그 구간의 가치(팀 승패)를
+	//   예측할 근거가 여기뿐이다. 값은 전부 0~1 근처로 미리 정규화해서 넣는다.
+	TMap<FName, FLearningAgentsObservationSchemaElement> Team;
+	Team.Add(Tag_AlliesAlive,   O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_AlliesAlive));
+	Team.Add(Tag_EnemiesAlive,  O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_EnemiesAlive));
+	Team.Add(Tag_RoundProgress, O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_RoundProgress));
+	Team.Add(Tag_ZoneRadius,    O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_ZoneRadius));
+	Team.Add(Tag_ZoneMargin,    O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_ZoneMargin));
+
 	TMap<FName, FLearningAgentsObservationSchemaElement> Root;
 	Root.Add(Tag_Fan,    Fan);
 	Root.Add(Tag_Enemy,  EnemyOptional);
 	Root.Add(Tag_Memory, O::SpecifyStructObservation(InObservationSchema, Memory, true, Tag_Memory));
+	Root.Add(Tag_Hit,    O::SpecifyStructObservation(InObservationSchema, Hit,    true, Tag_Hit));
+	Root.Add(Tag_Team,   O::SpecifyStructObservation(InObservationSchema, Team,   true, Tag_Team));
 	Root.Add(Tag_Self,   O::SpecifyStructObservation(InObservationSchema, Self,   true, Tag_Self));
 
 	OutObservationSchemaElement = O::SpecifyStructObservation(InObservationSchema, Root, true, Tag_Root);
@@ -147,7 +211,7 @@ void USH_ShooterInteractor::GatherAgentObservation_Implementation(
 		const float Depth01  = (Rays && Rays->IsValidIndex(Index)) ? (*Rays)[Index].Depth01  : 1.0f;
 
 		TMap<FName, FLearningAgentsObservationObjectElement> Ray;
-		Ray.Add(Tag_RayDepth,   O::MakeFloatObservation(InObservationObject, Depth01,  true, Tag_RayDepth));
+		Ray.Add(Tag_RayDepth,   O::MakeFloatObservation(InObservationObject, SanitizeObservation(Depth01, TEXT("RayDepth"), AgentId), true, Tag_RayDepth));
 		Ray.Add(Tag_RayHostile, O::MakeBoolObservation (InObservationObject, bHostile, true, Tag_RayHostile));
 		RayElements.Add(O::MakeStructObservation(InObservationObject, Ray, true, Tag_Ray));
 	}
@@ -162,9 +226,9 @@ void USH_ShooterInteractor::GatherAgentObservation_Implementation(
 	// ★ MakeAngleObservation 은 **도(degree)** 를 받는다. 라디안 버전은
 	//   MakeAngleObservationRadians 로 따로 있다 (LearningAgentsObservations.h:1727 / 1751).
 	Enemy.Add(Tag_EnemyAngle, O::MakeAngleObservation(InObservationObject,
-		bEnemyVisible ? Vision->GetHostileAngleDeg() : 0.0f, 0.0f, true, Tag_EnemyAngle));
+		SanitizeObservation(bEnemyVisible ? Vision->GetHostileAngleDeg() : 0.0f, TEXT("EnemyAngle"), AgentId), 0.0f, true, Tag_EnemyAngle));
 	Enemy.Add(Tag_EnemyDepth, O::MakeFloatObservation(InObservationObject,
-		bEnemyVisible ? Vision->GetHostileDepth01() : 1.0f, true, Tag_EnemyDepth));
+		SanitizeObservation(bEnemyVisible ? Vision->GetHostileDepth01() : 1.0f, TEXT("EnemyDepth"), AgentId), true, Tag_EnemyDepth));
 
 	const FLearningAgentsObservationObjectElement EnemyOptional =
 		O::MakeOptionalObservation(InObservationObject,
@@ -176,21 +240,65 @@ void USH_ShooterInteractor::GatherAgentObservation_Implementation(
 	// --- 기억 ---------------------------------------------------------------
 	TMap<FName, FLearningAgentsObservationObjectElement> Memory;
 	Memory.Add(Tag_TimeSince, O::MakeFloatObservation(InObservationObject,
-		bLive ? Vision->GetTimeSinceSeen() : MemoryHorizonSeconds, true, Tag_TimeSince));
+		SanitizeObservation(bLive ? Vision->GetTimeSinceSeen() : MemoryHorizonSeconds, TEXT("TimeSince"), AgentId), true, Tag_TimeSince));
 	Memory.Add(Tag_LastAngle, O::MakeAngleObservation(InObservationObject,
-		bLive ? Vision->GetLastSeenAngleDeg() : 0.0f, 0.0f, true, Tag_LastAngle));
+		SanitizeObservation(bLive ? Vision->GetLastSeenAngleDeg() : 0.0f, TEXT("LastAngle"), AgentId), 0.0f, true, Tag_LastAngle));
+
+	// --- 피격 기억 ----------------------------------------------------------
+	// 죽었으면 "오래 전에 맞았고 방향 없음" — 지평값 + 0 도. 0 초를 넣으면
+	// "방금 정면에서 맞았다" 가 되어 반대 뜻이 된다.
+	TMap<FName, FLearningAgentsObservationObjectElement> Hit;
+	Hit.Add(Tag_TimeSinceHit, O::MakeFloatObservation(InObservationObject,
+		SanitizeObservation(bLive ? Unit->GetTimeSinceLastHit() : HitMemoryHorizonSeconds, TEXT("TimeSinceHit"), AgentId), true, Tag_TimeSinceHit));
+	Hit.Add(Tag_HitAngle, O::MakeAngleObservation(InObservationObject,
+		SanitizeObservation(bLive ? Unit->GetLastHitRelativeAngleDeg() : 0.0f, TEXT("HitAngle"), AgentId), 0.0f, true, Tag_HitAngle));
 
 	// --- 자신 ---------------------------------------------------------------
 	TMap<FName, FLearningAgentsObservationObjectElement> Self;
 	Self.Add(Tag_HPRatio, O::MakeFloatObservation(InObservationObject,
-		Stats ? Stats->GetHPRatio() : 0.0f, true, Tag_HPRatio));
+		SanitizeObservation(Stats ? Stats->GetHPRatio() : 0.0f, TEXT("HPRatio"), AgentId), true, Tag_HPRatio));
 	Self.Add(Tag_CanFire, O::MakeBoolObservation(InObservationObject,
 		bLive && Unit->gun && Unit->gun->CanFire(), true, Tag_CanFire));
+
+	// --- 팀 · 라운드 ----------------------------------------------------------
+	// ★ 죽은 에이전트도 실제 값을 낸다(자기 위치에 의존하는 ZoneMargin 만 0).
+	float AlliesAlive = 0.0f;
+	float EnemiesAlive = 0.0f;
+	float RoundProgress = 0.0f;
+	float ZoneRadius01 = 1.0f;
+	float ZoneMargin = 0.0f;
+	if (const ASH_Arena* Arena = (Unit && Stats) ? Cast<ASH_Arena>(Unit->CachedGym.Get()) : nullptr)
+	{
+		const int32 MyTeam = static_cast<int32>(Stats->TeamId);
+		const int32 OtherTeam = 1 - MyTeam;
+		AlliesAlive  = static_cast<float>(Arena->GetAliveCount(MyTeam))    / static_cast<float>(FMath::Max(1, Arena->GetTeamSize(MyTeam)));
+		EnemiesAlive = static_cast<float>(Arena->GetAliveCount(OtherTeam)) / static_cast<float>(FMath::Max(1, Arena->GetTeamSize(OtherTeam)));
+		RoundProgress = FMath::Clamp(Arena->GetRoundElapsed() / FMath::Max(Arena->RoundTimeLimitSeconds, 1.0f), 0.0f, 1.0f);
+
+		const float ArenaRadiusCm = FMath::Max(Arena->ArenaRadius, 1.0f);
+		const float Zone = Arena->GetZoneRadius();
+		ZoneRadius01 = Zone / ArenaRadiusCm;
+		if (bLive)
+		{
+			// 양수 = 안전 구역 안쪽으로 그만큼 여유, 음수 = 밖에 있다(피해를 받는 중).
+			const float MyDistance = FVector::DistXY(Unit->GetActorLocation(), Arena->GetActorLocation());
+			ZoneMargin = (Zone - MyDistance) / ArenaRadiusCm;
+		}
+	}
+
+	TMap<FName, FLearningAgentsObservationObjectElement> Team;
+	Team.Add(Tag_AlliesAlive,   O::MakeFloatObservation(InObservationObject, SanitizeObservation(AlliesAlive,   TEXT("AlliesAlive"),   AgentId), true, Tag_AlliesAlive));
+	Team.Add(Tag_EnemiesAlive,  O::MakeFloatObservation(InObservationObject, SanitizeObservation(EnemiesAlive,  TEXT("EnemiesAlive"),  AgentId), true, Tag_EnemiesAlive));
+	Team.Add(Tag_RoundProgress, O::MakeFloatObservation(InObservationObject, SanitizeObservation(RoundProgress, TEXT("RoundProgress"), AgentId), true, Tag_RoundProgress));
+	Team.Add(Tag_ZoneRadius,    O::MakeFloatObservation(InObservationObject, SanitizeObservation(ZoneRadius01,  TEXT("ZoneRadius"),    AgentId), true, Tag_ZoneRadius));
+	Team.Add(Tag_ZoneMargin,    O::MakeFloatObservation(InObservationObject, SanitizeObservation(ZoneMargin,    TEXT("ZoneMargin"),    AgentId), true, Tag_ZoneMargin));
 
 	TMap<FName, FLearningAgentsObservationObjectElement> Root;
 	Root.Add(Tag_Fan,    Fan);
 	Root.Add(Tag_Enemy,  EnemyOptional);
 	Root.Add(Tag_Memory, O::MakeStructObservation(InObservationObject, Memory, true, Tag_Memory));
+	Root.Add(Tag_Hit,    O::MakeStructObservation(InObservationObject, Hit,    true, Tag_Hit));
+	Root.Add(Tag_Team,   O::MakeStructObservation(InObservationObject, Team,   true, Tag_Team));
 	Root.Add(Tag_Self,   O::MakeStructObservation(InObservationObject, Self,   true, Tag_Self));
 
 	OutObservationObjectElement = O::MakeStructObservation(InObservationObject, Root, true, Tag_Root);
@@ -272,6 +380,26 @@ void USH_ShooterInteractor::PerformAgentAction_Implementation(
 	A::GetExclusiveDiscreteAction(MoveIndex, InActionObject, *MoveElement, true, Tag_Move);
 	A::GetBoolAction             (bFire,     InActionObject, *FireElement, true, Tag_Fire);
 
+	// --- 진단 지표 집계 -------------------------------------------------------
+	// ★ 여기서 센다. 위의 조기 반환들을 지난 뒤이므로 **살아서 실제로 행동한 결정**만
+	//   분모에 들어간다. 죽은 에이전트를 포함하면 이동 분포가 "정지" 로 쏠려 보인다.
+	//
+	// ★ 발사 가능 여부를 PullTrigger **전에** 읽어야 한다. 이 시점의 CanFire() 는
+	//   MakeAgentActionModifier 가 마스킹을 결정할 때 본 값과 같다 —
+	//   그 사이에 이 총이 발사되는 경로가 없다.
+	++ActionStats.Decisions;
+	++ActionStats.MoveCounts[FMath::Clamp(MoveIndex, 0, SHRL::MoveBins - 1)];
+
+	const bool bCouldFire = Unit->gun && Unit->gun->CanFire();
+	if (bCouldFire)
+	{
+		++ActionStats.FireOpportunities;
+		if (bFire)
+		{
+			++ActionStats.FiresUsed;
+		}
+	}
+
 	// --- 조준: 각속도만 적어 둔다. 실제 적용은 폰의 Tick 이다 -------------------
 	// ★ 여기서 직접 SetControlRotation 하면 20Hz 로만 돌아 프레임률에 따라 실효
 	//   각속도가 달라진다. ASH_RLCharacter::Tick 이 DeltaTime 을 곱해 매 프레임 적용한다.
@@ -312,20 +440,66 @@ void USH_ShooterInteractor::MakeAgentActionModifier_Implementation(
 	using A = ULearningAgentsActions;
 
 	const ASH_RLCharacter* Unit = ResolveUnit(AgentId);
-	const bool bCanFire = Unit && Unit->gun && Unit->gun->CanFire();
 
 	TMap<FName, FLearningAgentsActionModifierElement> Modifiers;
+
+	// ★★★ 어떤 이산 행동도 **선택지 하나만 남기는 마스크**를 쓰지 않는다 (2026-10-02, 크래시 5회).
+	//   엔진의 DistributionMultinoulliMasked(LearningRandom.cpp)는 검벨-최대 샘플링이다:
+	//   값 = 로짓 − log(−log u). u 는 Float() 가 해시 상위 23비트로 만드는 [0, 1) 이라
+	//   **정확히 0 이 나올 확률이 2^-23** 이고, 그러면 값이 −∞ 가 된다. 허용 선택지가 하나뿐이면
+	//   그 하나가 −∞ 일 때 "MaxIdx != INDEX_NONE" 체크에 걸려 프로세스가 죽는다.
+	//
+	//   ★ 불리언 행동도 해당된다. SpecifyBoolAction 은 내부적으로 선택지 2개짜리 배타적 이산
+	//   행동이고(LearningAgentsActions.cpp SpecifyBoolAction), MakeBoolActionModifier(false) 는
+	//   "참" 인덱스를 막는 마스크라 **허용 선택지가 하나만 남는다.** 예전에는 쿨다운마다 발사를
+	//   이렇게 막았고, 사망 마스크까지 더해지자 self-play 에서 수 분 간격으로 크래시했다.
+	//   마스킹 빈도가 낮던 4·5회차(사망 시 에피소드 종료, 에이전트 160)는 수 시간 무사했다.
+
+	// --- 사망 마스크 ----------------------------------------------------------
+	// ★ 죽은 에이전트는 라운드 끝까지 에피소드에 남는다(USH_ShooterTrainingEnv 헤더 참조).
+	//   행동은 PerformAgentAction 이 바로 버리므로 무엇이 뽑혀도 결과가 같다.
+	//   MaskedIndices 는 막을 인덱스다(파이썬 log_softmax_masked 가 masked = 1 인 로짓을 지운다).
+	//
+	// ★★ 선택지를 **둘** 남긴다. 하나만 남기면 엔진이 크래시한다 (위 ★★★ 설명).
+	//   죽은 에이전트 약 80 x 행동 2 x 초당 결정 11 = 초당 1,760 샘플 → 약 1.3시간에 한 번.
+	//   둘을 남기면 (2^-23)^2 이라 사실상 0 이다. 대가는 죽은 스텝에 두 선택지 사이의 작은
+	//   그래디언트가 생기는 것인데, 행동이 아무 효과가 없으므로 정책에 의미 있는 영향은 없다.
+	//   ★ 전부 막아도 안 된다 — 허용된 선택지가 없으면 같은 체크에 항상 걸린다.
+	const bool bDead = !Unit || !Unit->bEntityEnabled || !Unit->CombatStats || !Unit->CombatStats->IsAlive();
+	if (bDead)
+	{
+		const int32 TurnKeepA = SHRL::TurnBins / 2;       // 회전 없음
+		const int32 TurnKeepB = SHRL::TurnBins / 2 - 1;   // 그 옆 (효과 없음 — 행동이 버려진다)
+		TArray<int32> TurnMasked;
+		for (int32 Index = 0; Index < SHRL::TurnBins; ++Index)
+		{
+			if (Index != TurnKeepA && Index != TurnKeepB)
+			{
+				TurnMasked.Add(Index);
+			}
+		}
+		TArray<int32> MoveMasked;
+		for (int32 Index = 2; Index < SHRL::MoveBins; ++Index)   // 0 = 정지, 1 = 전진을 남긴다
+		{
+			MoveMasked.Add(Index);
+		}
+
+		Modifiers.Add(Tag_Turn, A::MakeExclusiveDiscreteActionModifier(InActionModifier, TurnMasked, Tag_Turn));
+		Modifiers.Add(Tag_Move, A::MakeExclusiveDiscreteActionModifier(InActionModifier, MoveMasked, Tag_Move));
+		// 발사는 막지 않는다(선택지가 둘뿐이라 막으면 하나가 남는다). 행동이 버려지므로 효과는 같다.
+		Modifiers.Add(Tag_Fire, A::MakeNullActionModifier(InActionModifier, Tag_Fire));
+		OutActionModifierElement = A::MakeStructActionModifier(InActionModifier, Modifiers, Tag_ActRoot);
+		return;
+	}
 
 	// 회전과 이동은 막지 않는다 — 물리적으로 불가능한 선택지가 없다.
 	Modifiers.Add(Tag_Turn, A::MakeExclusiveDiscreteActionModifier(InActionModifier, {}, Tag_Turn));
 	Modifiers.Add(Tag_Move, A::MakeExclusiveDiscreteActionModifier(InActionModifier, {}, Tag_Move));
 
-	// 쿨다운 중이면 발사를 물리적으로 막는다.
-	// ★ 조준 오차로는 **절대** 마스킹하지 않는다 — 그러면 빗맞히는 게 나쁘다는 걸
-	//   영영 못 배우고, "언제 쏠지" 를 정책이 스스로 판단하지 못한다.
-	Modifiers.Add(Tag_Fire, bCanFire
-		? A::MakeNullActionModifier(InActionModifier, Tag_Fire)
-		: A::MakeBoolActionModifier(InActionModifier, false, Tag_Fire));
+	// 발사는 막지 않는다. 쿨다운 중이면 AGun::PullTrigger 가 CanFire() 에서 바로 돌아가므로
+	// 발사도 빗맞힘 집계도 생기지 않는다(Gun.cpp). 정책은 관측의 CanFire 로 쿨다운을 안다.
+	// ★ 조준 오차로도 **절대** 마스킹하지 않는다 — 빗맞히는 게 나쁘다는 걸 영영 못 배운다.
+	Modifiers.Add(Tag_Fire, A::MakeNullActionModifier(InActionModifier, Tag_Fire));
 
 	OutActionModifierElement = A::MakeStructActionModifier(InActionModifier, Modifiers, Tag_ActRoot);
 }
