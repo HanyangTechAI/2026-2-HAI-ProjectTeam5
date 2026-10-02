@@ -8,6 +8,21 @@
 
 class ALearningAgentsGymBase;
 class ASH_RLCharacter;
+class USH_VisionComponent;
+
+struct FSHShooterAgentRewardState
+{
+	TWeakObjectPtr<ASH_RLCharacter> Unit;
+	bool bInitialized = false;
+	bool bWasVisible = false;
+	bool bHasPreviousAimError = false;
+	float PreviousAimError = 0.0f;
+	bool bHasPreviousMemoryError = false;
+	float PreviousMemoryError = 0.0f;
+	bool bHasLastEnemyWorldYaw = false;
+	float LastEnemyWorldYaw = 0.0f;
+	bool bReacquirePending = false;
+};
 
 /**
  *  보상 · 완료 · 리셋.
@@ -44,7 +59,7 @@ public:
 
 	/** 명중 1발마다 추가하는 보상. */
 	UPROPERTY(EditAnywhere, Category = "SH|Reward")
-	float HitBonus = 0.1f;
+	float HitBonus = 0.0f;
 
 	/** 킬 보너스. 오버킬이 보상에 안 잡히므로 마무리에 값을 붙여 준다. */
 	UPROPERTY(EditAnywhere, Category = "SH|Reward")
@@ -62,12 +77,24 @@ public:
 
 	/** 적을 시야에 넣고 있는 것 자체의 보상. */
 	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping")
-	float SeeWeight = 0.02f;
+	float SeeWeight = 0.005f;
 
 	/** 적을 조준선 중앙에 둘수록 주는 보상. 정렬도의 4제곱을 곱한다 —
 	 *  대충 보는 것으로는 거의 못 받고 정확히 겨눌 때만 받는다. */
 	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping")
-	float AlignWeight = 0.05f;
+	float AlignWeight = 0.0f;
+
+	/** 이전 결정 대비 조준 오차가 감소한 비율에 곱하는 보상. */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping")
+	float AimProgressWeight = 0.12f;
+
+	/** 적을 놓친 뒤 기억 방향 오차가 감소한 비율에 곱하는 보상. */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping")
+	float MemoryTurnProgressWeight = 0.08f;
+
+	/** 기억을 따라 재탐색해 적을 다시 발견했을 때 주는 보상. */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping")
+	float ReacquireBonus = 0.05f;
 
 	/**
 	 *  셰이핑이 0 으로 감쇠하는 데 걸리는 결정 스텝 수 (에이전트당).
@@ -110,6 +137,8 @@ public:
 	virtual void GatherAgentReward_Implementation(float& OutReward, const int32 AgentId) override;
 	virtual void GatherAgentCompletion_Implementation(ELearningAgentsCompletion& OutCompletion, const int32 AgentId) override;
 	virtual void ResetAgentEpisode_Implementation(const int32 AgentId) override;
+	virtual void OnAgentsAdded_Implementation(const TArray<int32>& AgentIds) override;
+	virtual void OnAgentsRemoved_Implementation(const TArray<int32>& AgentIds) override;
 
 	/** 현재 셰이핑 배율(1 → 0). 로그에 찍어 감쇠가 도는지 확인한다. */
 	UFUNCTION(BlueprintPure, Category = "SH|Reward")
@@ -117,10 +146,16 @@ public:
 
 protected:
 	ASH_RLCharacter* ResolveUnit(const int32 AgentId) const;
+	float GatherProgressReward(const int32 AgentId, ASH_RLCharacter* Unit, USH_VisionComponent* Vision);
+	void ResetAgentRewardState(const int32 AgentId);
+	void ResetGymAgentRewardStates(ALearningAgentsGymBase* Gym);
 
 private:
 	/** 지금까지 보상을 수집한 총 횟수. 셰이핑 감쇠의 분자다. */
 	int64 RewardStepCount = 0;
+
+	/** 진행도 기억은 AgentId 별로 분리하며, pooled unit이 바뀌면 교체한다. */
+	TMap<int32, FSHShooterAgentRewardState> AgentRewardStates;
 
 	/** 같은 프레임에 같은 아레나를 여러 번 리셋하지 않기 위한 중복 제거.
 	 *  20개 에이전트가 각자 ResetAgentEpisode 를 부르기 때문에 반드시 필요하다. */
