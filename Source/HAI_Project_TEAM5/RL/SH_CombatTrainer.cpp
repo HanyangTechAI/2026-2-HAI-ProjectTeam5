@@ -5,19 +5,101 @@
 #include "Combat/CombatStatsComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "HAL/FileManager.h"
 #include "LearningAgentsCritic.h"
 #include "LearningAgentsInteractor.h"
 #include "LearningAgentsManager.h"
+#include "LearningAgentsNeuralNetwork.h"
 #include "LearningAgentsPolicy.h"
 #include "LearningAgentsTrainingEnvironment.h"
 #include "Misc/CommandLine.h"
+#include "Misc/DateTime.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "SH_Arena.h"
 #include "SH_RLBotController.h"
 #include "SH_RLCharacter.h"
+#include "SH_ScriptBotController.h"
 #include "SH_ShooterInteractor.h"
 #include "SH_ShooterTrainingEnv.h"
 #include "SH_VisionComponent.h"
+
+namespace
+{
+	/**
+	 *  스냅샷 폴더 안의 파일 경로.
+	 *  새 형식은 파일 이름 앞에 폴더 이름(= 누적 시간)이 붙는다: cum005h00m/cum005h00m_policy.bin.
+	 *  그 파일이 없으면 옛 형식(Saved/SHSnapshots/.../policy.bin)으로 본다.
+	 */
+	FString SnapshotFile(const FString& Directory, const TCHAR* FileName)
+	{
+		const FString Prefixed = FPaths::Combine(Directory, FPaths::GetCleanFilename(Directory) + TEXT("_") + FileName);
+		return FPaths::FileExists(Prefixed) ? Prefixed : FPaths::Combine(Directory, FileName);
+	}
+
+	bool HasPolicyFile(const FString& Directory)
+	{
+		return FPaths::FileExists(SnapshotFile(Directory, TEXT("policy.bin")));
+	}
+
+	/** meta.txt 의 key=value 줄을 읽는다. */
+	bool ReadSnapshotMeta(const FString& Directory, TMap<FString, FString>& OutMeta)
+	{
+		FString Text;
+		if (!FFileHelper::LoadFileToString(Text, *SnapshotFile(Directory, TEXT("meta.txt"))))
+		{
+			return false;
+		}
+		TArray<FString> Lines;
+		Text.ParseIntoArrayLines(Lines);
+		for (const FString& Line : Lines)
+		{
+			FString Key, Value;
+			if (Line.Split(TEXT("="), &Key, &Value))
+			{
+				OutMeta.Add(Key, Value);
+			}
+		}
+		return true;
+	}
+
+	/**
+	 *  그 스냅샷까지의 누적 학습 시간(초).
+	 *  meta 에 cumulative_seconds 가 있으면 그 값(2026-10-14 부터 기록), 없으면
+	 *  elapsed_seconds 에 resumed_from 스냅샷의 누적값을 더한다(옛 스냅샷은 이어 온 사슬을 따라간다).
+	 */
+	double ReadCumulativeSeconds(const FString& Directory, int32 Depth = 0)
+	{
+		TMap<FString, FString> Meta;
+		if (Depth > 32 || !ReadSnapshotMeta(Directory, Meta))
+		{
+			return 0.0;
+		}
+		if (const FString* Cumulative = Meta.Find(TEXT("cumulative_seconds")))
+		{
+			return FCString::Atod(**Cumulative);
+		}
+		double Seconds = 0.0;
+		if (const FString* Elapsed = Meta.Find(TEXT("elapsed_seconds")))
+		{
+			Seconds = FCString::Atod(**Elapsed);
+		}
+		const FString* From = Meta.Find(TEXT("resumed_from"));
+		if (From && !From->IsEmpty() && *From != TEXT("-"))
+		{
+			Seconds += ReadCumulativeSeconds(*From, Depth + 1);
+		}
+		return Seconds;
+	}
+
+	/** 005h00m. 수십 시간 학습까지 이름 순 정렬이 시간 순과 같도록 시간을 세 자리로 쓴다. */
+	FString FormatHoursMinutes(double Seconds)
+	{
+		const int64 TotalMinutes = FMath::FloorToInt64(FMath::Max(0.0, Seconds) / 60.0);
+		return FString::Printf(TEXT("%03lldh%02lldm"), TotalMinutes / 60, TotalMinutes % 60);
+	}
+}
 
 ASH_CombatTrainer::ASH_CombatTrainer()
 {
@@ -25,6 +107,9 @@ ASH_CombatTrainer::ASH_CombatTrainer()
 	PrimaryActorTick.bStartWithTickEnabled = true;
 
 	Manager = CreateDefaultSubobject<ULearningAgentsManager>(TEXT("LearningAgentsManager"));
+
+	// 상대 정책(과거 스냅샷) 전용 매니저. 상대 혼합을 안 쓰면 에이전트 0개로 남는다.
+	OpponentManager = CreateDefaultSubobject<ULearningAgentsManager>(TEXT("OpponentManager"));
 
 	// ★ 기본값이 learning_core.train_behavior_cloning 이다. 반드시 바꾼다.
 	ProcessSettings.TrainerFileName = TEXT("learning_core.train_ppo");
@@ -129,18 +214,126 @@ void ASH_CombatTrainer::BeginPlay()
 		TrainingSettings.bUseGradNormMaxClipping = (OverrideGradClip == 1);
 	}
 
+	float OverrideSnapshotInterval = -1.0f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHSnapshotInterval="), OverrideSnapshotInterval) && OverrideSnapshotInterval >= 0.0f)
+	{
+		SnapshotIntervalSeconds = OverrideSnapshotInterval;
+	}
+	SnapshotRunStamp = FDateTime::Now().ToString(TEXT("%Y%m%d-%H%M%S"));
+	LastSnapshotRealTime = StartRealTime;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("SHSnapshotRoot="), SnapshotRootDir) || SnapshotRootDir.IsEmpty())
+	{
+		SnapshotRootDir = FPaths::Combine(FPaths::ProjectDir(), TEXT("Snapshots"));
+	}
+	SnapshotRootDir = FPaths::ConvertRelativePathToFull(SnapshotRootDir);
+	FPaths::NormalizeDirectoryName(SnapshotRootDir);
+
+	// --- 이어서 학습하기 -------------------------------------------------------
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHResume="), ResumeDir) && !ResumeDir.IsEmpty())
+	{
+		FPaths::NormalizeDirectoryName(ResumeDir);
+		UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer] 이어서 학습 — 스냅샷 '%s'"), *ResumeDir);
+	}
+
+	// --- 평가 모드 -----------------------------------------------------------
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHEval="), EvalSnapshotDir) && !EvalSnapshotDir.IsEmpty())
+	{
+		bEvalMode = true;
+		FPaths::NormalizeDirectoryName(EvalSnapshotDir);
+	}
+	float OverrideEvalNoise = -1.0f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHEvalNoise="), OverrideEvalNoise) && OverrideEvalNoise >= 0.0f)
+	{
+		EvalActionNoise = OverrideEvalNoise;
+	}
+	int32 OverrideEvalRounds = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHEvalRounds="), OverrideEvalRounds) && OverrideEvalRounds >= 0)
+	{
+		EvalMaxRounds = OverrideEvalRounds;
+	}
+	int32 OverrideEvalRealtime = 0;
+	const bool bRealtimeOnCommandLine = FParse::Value(FCommandLine::Get(), TEXT("SHEvalRealtime="), OverrideEvalRealtime);
+	if (bRealtimeOnCommandLine)
+	{
+		bEvalRealtime = (OverrideEvalRealtime == 1);
+	}
+
+	// 레벨에 저장된 평가 설정 (Lvl_SHView). 명령줄이 없을 때만 쓴다.
+	if (!bEvalMode && bEvalOnPlay && !EvalSnapshotDirectory.Path.IsEmpty())
+	{
+		bEvalMode = true;
+		EvalSnapshotDir = EvalSnapshotDirectory.Path;
+		FPaths::NormalizeDirectoryName(EvalSnapshotDir);
+		if (!bRealtimeOnCommandLine)
+		{
+			bEvalRealtime = bEvalRealtimeOnPlay;
+		}
+		if (EvalOpponentDir.IsEmpty() && !EvalOpponentDirectory.Path.IsEmpty())
+		{
+			EvalOpponentDir = EvalOpponentDirectory.Path;
+			FPaths::NormalizeDirectoryName(EvalOpponentDir);
+		}
+	}
+
+	int32 OverrideDrawVision = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHDrawVision="), OverrideDrawVision) && (OverrideDrawVision == 0 || OverrideDrawVision == 1))
+	{
+		bDrawVisionDebug = (OverrideDrawVision == 1);
+	}
+
+	// --- 상대 혼합 -----------------------------------------------------------
+	int32 OverrideMix = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHOpponentMix="), OverrideMix) && (OverrideMix == 0 || OverrideMix == 1))
+	{
+		bOpponentMix = (OverrideMix == 1);
+	}
+	int32 OverrideMixSnapshot = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHMixSnapshot="), OverrideMixSnapshot) && OverrideMixSnapshot >= 0)
+	{
+		MixSnapshotArenas = OverrideMixSnapshot;
+	}
+	int32 OverrideMixBot = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHMixBot="), OverrideMixBot) && OverrideMixBot >= 0)
+	{
+		MixBotArenas = OverrideMixBot;
+	}
+	float OverrideSwap = -1.0f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHOpponentSwap="), OverrideSwap) && OverrideSwap >= 10.0f)
+	{
+		OpponentSwapSeconds = OverrideSwap;
+	}
+	FParse::Value(FCommandLine::Get(), TEXT("SHOpponentPool="), OpponentPoolDir);
+	FPaths::NormalizeDirectoryName(OpponentPoolDir);   // 끝의 '/' 가 있으면 폴더 이름(파일 접두어)을 못 읽는다
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHEvalOpponent="), EvalOpponentDir) && !EvalOpponentDir.IsEmpty())
+	{
+		FPaths::NormalizeDirectoryName(EvalOpponentDir);
+	}
+	MixRandom.Initialize(Seed);
+	LastOpponentSwapRealTime = StartRealTime;
+
 	UE_LOG(LogTemp, Display,
-		TEXT("[SH_CombatTrainer] 실행 한도 %.0f초, 리포트 주기 %.0f초."),
-		MaxWallClockSeconds, ReportInterval);
+		TEXT("[SH_CombatTrainer] 실행 한도 %.0f초, 리포트 주기 %.0f초, 스냅샷 주기 %.0f초 (%s/<날짜>/cum<누적 시간>, 실행 %s)."),
+		MaxWallClockSeconds, ReportInterval, SnapshotIntervalSeconds, *SnapshotRootDir, *SnapshotRunStamp);
+	if (bEvalMode)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[SH_CombatTrainer] 평가 모드 — 스냅샷 '%s', 행동 잡음 x%.2f, 라운드 상한 %d, %s."),
+			*EvalSnapshotDir, EvalActionNoise, EvalMaxRounds,
+			bEvalRealtime ? TEXT("실제 시간") : TEXT("고정 델타타임(최대 속도)"));
+	}
 
 	// ★ 여기서 조립하지 않는다. 아레나가 아직 없을 수 있다 — 헤더 주석 참조.
 	UE_LOG(LogTemp, Display,
 		TEXT("[SH_CombatTrainer] BeginPlay. 조립은 첫 Tick 에서 한다 (아레나 스폰 이후)."));
 }
 
-void ASH_CombatTrainer::CollectAgentUnits(TArray<ASH_RLCharacter*>& OutUnits) const
+void ASH_CombatTrainer::CollectAgentUnits(TArray<ASH_RLCharacter*>& OutUnits, TArray<ABase_Character*>* OutOpponents) const
 {
 	OutUnits.Reset();
+	if (OutOpponents)
+	{
+		OutOpponents->Reset();
+	}
 
 	UWorld* World = GetWorld();
 	if (!World)
@@ -162,8 +355,84 @@ void ASH_CombatTrainer::CollectAgentUnits(TArray<ASH_RLCharacter*>& OutUnits) co
 			continue;
 		}
 
+		// 스냅샷 아레나의 팀 1 은 RL 컨트롤러지만 학습 정책이 아니라 상대 정책이 조종한다.
+		const ASH_Arena* Arena = Cast<ASH_Arena>(Unit->CachedGym.Get());
+		const int32 Team = Unit->CombatStats ? static_cast<int32>(Unit->CombatStats->TeamId) : 0;
+		if (Arena && !IsLearnerTeam(Arena, Team))
+		{
+			if (OutOpponents)
+			{
+				OutOpponents->Add(Unit);
+			}
+			continue;
+		}
+
 		OutUnits.Add(Unit);
 	}
+}
+
+void ASH_CombatTrainer::AssignArenaRoles()
+{
+	ArenaRoles.Reset();
+
+	// 유닛이 있는 아레나만, 이름순으로(실행마다 같은 배정).
+	TArray<ASH_Arena*> Found;
+	for (TActorIterator<ASH_Arena> It(GetWorld()); It; ++It)
+	{
+		if (*It && (It->GetTeamSize(0) + It->GetTeamSize(1)) > 0)
+		{
+			Found.Add(*It);
+		}
+	}
+	Found.Sort([](const ASH_Arena& A, const ASH_Arena& B) { return A.GetName() < B.GetName(); });
+
+	const bool bEvalVsSnapshot = bEvalMode && !EvalOpponentDir.IsEmpty();
+	int32 SnapshotLeft = bEvalVsSnapshot ? Found.Num() : (bOpponentMix ? MixSnapshotArenas : 0);
+	int32 BotLeft = bEvalVsSnapshot ? 0 : (bOpponentMix ? MixBotArenas : 0);
+
+	int32 Counts[3] = { 0, 0, 0 };
+	for (ASH_Arena* Arena : Found)
+	{
+		ESHArenaRole ArenaRole;
+		if (SnapshotLeft > 0)
+		{
+			ArenaRole = ESHArenaRole::Snapshot;
+			--SnapshotLeft;
+		}
+		else if (BotLeft > 0)
+		{
+			ArenaRole = ESHArenaRole::Bot;
+			--BotLeft;
+		}
+		else
+		{
+			// 혼합이 아니면 예전 방식: bSelfPlay 면 self-play, 아니면 봇.
+			ArenaRole = (bOpponentMix || bSelfPlay) ? ESHArenaRole::SelfPlay : ESHArenaRole::Bot;
+		}
+		ArenaRoles.Add(Arena, ArenaRole);
+		LastRoundIndex.Add(Arena, Arena->GetRoundIndex());
+		++Counts[static_cast<int32>(ArenaRole)];
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[SH_CombatTrainer] 아레나 역할 — self-play %d / 스냅샷 상대 %d / 스크립트 봇 %d%s"),
+		Counts[0], Counts[1], Counts[2], bOpponentMix ? TEXT(" (상대 혼합)") : TEXT(""));
+}
+
+ESHArenaRole ASH_CombatTrainer::GetArenaRole(const ASH_Arena* Arena) const
+{
+	const ESHArenaRole* ArenaRole = Arena ? ArenaRoles.Find(const_cast<ASH_Arena*>(Arena)) : nullptr;
+	return ArenaRole ? *ArenaRole : (bSelfPlay ? ESHArenaRole::SelfPlay : ESHArenaRole::Bot);
+}
+
+bool ASH_CombatTrainer::IsLearnerTeam(const ASH_Arena* Arena, const int32 Team) const
+{
+	return Team == 0 || GetArenaRole(Arena) == ESHArenaRole::SelfPlay;
+}
+
+bool ASH_CombatTrainer::NeedsRLTeam1(const ASH_Arena* Arena) const
+{
+	return GetArenaRole(Arena) != ESHArenaRole::Bot;
 }
 
 bool ASH_CombatTrainer::ValidateUnitSchema(const TArray<ASH_RLCharacter*>& Units) const
@@ -193,6 +462,19 @@ bool ASH_CombatTrainer::ValidateUnitSchema(const TArray<ASH_RLCharacter*>& Units
 			bOk = false;
 		}
 
+		// ★ 집합 관측의 최대 크기는 코드 상수다. 팀 인원이 더 많으면 넘치는 적/아군이 관측에서 잘린다.
+		if (const ASH_Arena* Arena = Cast<ASH_Arena>(Unit->CachedGym.Get()))
+		{
+			const int32 MyTeam = Unit->CombatStats ? static_cast<int32>(Unit->CombatStats->TeamId) : 0;
+			if (Arena->GetTeamSize(1 - MyTeam) > SHRL::MaxEnemies || Arena->GetTeamSize(MyTeam) - 1 > SHRL::MaxAllies)
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[SH_CombatTrainer] %s: 아레나 팀 인원(아군 %d, 적 %d)이 스키마 상한(MaxAllies %d + 자신, MaxEnemies %d)을 넘는다."),
+					*Unit->GetName(), Arena->GetTeamSize(MyTeam), Arena->GetTeamSize(1 - MyTeam), SHRL::MaxAllies, SHRL::MaxEnemies);
+				bOk = false;
+			}
+		}
+
 		// ★ 피격 기억 지평은 Units[0] 것만 인터랙터로 복사된다 (Assemble 참조).
 		//   유닛마다 다르면 그 유닛의 클램프 상한과 정규화 Scale 이 어긋나서
 		//   TimeSinceHit 이 0~1 을 벗어난다. 에러는 나지 않는다.
@@ -219,8 +501,11 @@ void ASH_CombatTrainer::Assemble()
 		return;
 	}
 
-	// --- 0a. self-play: 아레나 유닛의 컨트롤러를 RL 컨트롤러로 바꿔 끼운다 --------
-	if (bSelfPlay)
+	// --- 0. 아레나 역할 (상대 혼합 / 평가 상대) --------------------------------
+	AssignArenaRoles();
+
+	// --- 0a. self-play · 스냅샷 아레나: 팀 1 의 컨트롤러를 RL 컨트롤러로 바꿔 끼운다 ----
+	if (bSelfPlay || bOpponentMix || !EvalOpponentDir.IsEmpty())
 	{
 		int32 Swapped = 0;
 		for (TActorIterator<ASH_RLCharacter> It(GetWorld()); It; ++It)
@@ -229,6 +514,10 @@ void ASH_CombatTrainer::Assemble()
 			if (!Unit || !Unit->CachedGym)
 			{
 				continue;   // 아레나 소속 유닛만
+			}
+			if (!NeedsRLTeam1(Cast<ASH_Arena>(Unit->CachedGym.Get())))
+			{
+				continue;   // 봇 아레나는 스크립트 봇을 그대로 둔다
 			}
 
 			AController* OldController = Unit->GetController();
@@ -255,7 +544,7 @@ void ASH_CombatTrainer::Assemble()
 			}
 		}
 		UE_LOG(LogTemp, Display,
-			TEXT("[SH_CombatTrainer] self-play — 유닛 %d개의 컨트롤러를 SH_RLBotController 로 교체했다."), Swapped);
+			TEXT("[SH_CombatTrainer] 팀 1 유닛 %d개의 컨트롤러를 SH_RLBotController 로 교체했다."), Swapped);
 	}
 
 	// 게더당 기록 스텝. self-play 는 에이전트가 두 배라 버퍼도 키운다.
@@ -263,14 +552,30 @@ void ASH_CombatTrainer::Assemble()
 	{
 		TrainerSettings.MaximumRecordedStepsPerIteration = BufferOverride;
 	}
-	else if (bSelfPlay)
+	else if (bSelfPlay || bOpponentMix)
 	{
 		TrainerSettings.MaximumRecordedStepsPerIteration = SelfPlayRecordedSteps;
 	}
 
-	// --- 0. 에이전트가 될 유닛을 먼저 찾는다 -----------------------------------
+	// --- 0b. 에이전트가 될 유닛을 먼저 찾는다 ----------------------------------
 	TArray<ASH_RLCharacter*> Units;
-	CollectAgentUnits(Units);
+	TArray<ABase_Character*> OpponentUnits;
+	CollectAgentUnits(Units, &OpponentUnits);
+
+	// 시야 그리기 (시각 확인용). RL 정책이 조종하는 유닛 전부 — 학습 정책과 상대 정책.
+	if (bDrawVisionDebug)
+	{
+		auto EnableDraw = [](ABase_Character* Unit)
+		{
+			if (USH_VisionComponent* Vision = Unit ? Unit->FindComponentByClass<USH_VisionComponent>() : nullptr)
+			{
+				Vision->bDrawDebug = true;
+			}
+		};
+		for (ASH_RLCharacter* Unit : Units) { EnableDraw(Unit); }
+		for (ABase_Character* Unit : OpponentUnits) { EnableDraw(Unit); }
+		UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer] 시야 그리기 켬 — 유닛 %d개."), Units.Num() + OpponentUnits.Num());
+	}
 
 	if (Units.Num() == 0)
 	{
@@ -337,10 +642,23 @@ void ASH_CombatTrainer::Assemble()
 		FLearningAgentsPolicySettings(), Seed);
 	Policy = PolicyPtr;
 
-	ULearningAgentsCritic* CriticPtr = ULearningAgentsCritic::MakeCritic(
-		ManagerPtr, InteractorPtr, PolicyPtr, ULearningAgentsCritic::StaticClass(), TEXT("ShooterCritic"),
-		/*Network*/ nullptr, /*bReinit*/ true, FLearningAgentsCriticSettings(), Seed);
-	Critic = CriticPtr;
+	// 평가 모드: 무작위 초기화 위에 스냅샷을 덮어쓴다. 크리틱은 만들지 않는다(추론에 안 쓴다).
+	ULearningAgentsCritic* CriticPtr = nullptr;
+	if (bEvalMode)
+	{
+		if (!LoadPolicySnapshot(EvalSnapshotDir))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 평가 스냅샷을 불러오지 못했다 — 조립을 중단한다."));
+			return;
+		}
+	}
+	else
+	{
+		CriticPtr = ULearningAgentsCritic::MakeCritic(
+			ManagerPtr, InteractorPtr, PolicyPtr, ULearningAgentsCritic::StaticClass(), TEXT("ShooterCritic"),
+			/*Network*/ nullptr, /*bReinit*/ true, FLearningAgentsCriticSettings(), Seed);
+		Critic = CriticPtr;
+	}
 
 	// --- 5. TrainingEnvironment ---------------------------------------------
 	ULearningAgentsTrainingEnvironment* EnvPtr = ULearningAgentsTrainingEnvironment::MakeTrainingEnvironment(
@@ -369,6 +687,13 @@ void ASH_CombatTrainer::Assemble()
 	// ★ 시계 비용의 상쇄는 학습에 실제로 쓰는 γ 와 같을 때만 정확하다.
 	TrainingEnvironment->ClockDiscount = TrainingSettings.DiscountFactor;
 
+	// 이어서 학습하기: 네트워크 4개 + 보상 수집 누적 횟수. 환경이 생긴 뒤여야 한다.
+	if (!bEvalMode && !ResumeDir.IsEmpty() && !LoadResumeSnapshot(ResumeDir))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 이어서 학습할 스냅샷을 불러오지 못했다 — 조립을 중단한다."));
+		return;
+	}
+
 	// --- 아레나: 라운드 지표 수집 대상 + 커맨드라인 오버라이드 ----------------
 	Arenas.Reset();
 	AgentTeamMask = 0;
@@ -395,6 +720,8 @@ void ASH_CombatTrainer::Assemble()
 		{
 			Arena->RoundTimeLimitSeconds = RoundTimeOverride;
 		}
+		// 상대 혼합: self-play 아레나는 승패 보상 0 (ASH_Arena::OutcomeRewardScale 주석).
+		Arena->OutcomeRewardScale = (bOpponentMix && GetArenaRole(Arena) == ESHArenaRole::SelfPlay) ? 0.0f : 1.0f;
 		Arenas.Add(Arena);
 	}
 
@@ -429,6 +756,71 @@ void ASH_CombatTrainer::Assemble()
 		bResetAgentsOnUpdate ? TEXT("켬") : TEXT("끔"),
 		TrainingSettings.bSaveSnapshots ? TEXT("켬") : TEXT("끔"),
 		TrainingSettings.bUseGradNormMaxClipping ? TEXT("켬") : TEXT("끔"));
+
+	// --- 날짜별 학습 기록(md)의 실행 머리말 ---------------------------------------
+	// 무엇으로 학습했는지는 코드만 봐서는 알 수 없다(명령줄 오버라이드가 많다). 실행마다 남긴다.
+	if (!bEvalMode)
+	{
+		const FDateTime Now = FDateTime::Now();
+		RunLogHeader = FString::Printf(
+			TEXT("\n### 실행 %s (시작 %s)\n")
+			TEXT("- 시작 정책: %s\n")
+			TEXT("- 실행 한도 %s, 스냅샷 주기 %s\n")
+			TEXT("- self-play %s, 상대 혼합 %s, 학습 에이전트 %d, 관측 크기 %d, 버퍼 %d 스텝\n")
+			TEXT("- 보상: 결과 ±%.1f, 팀 스피릿 %.2f, 시간 초과 %s, 축소 구역 %s\n")
+			TEXT("- 스냅샷:\n"),
+			*SnapshotRunStamp, *Now.ToString(TEXT("%Y-%m-%d %H:%M")),
+			ResumeDir.IsEmpty()
+				? TEXT("무작위 초기화 (누적 0)")
+				: *FString::Printf(TEXT("`%s` 에서 이어서 (누적 %s 부터)"), *ResumeDir, *FormatHoursMinutes(CumulativeBaseSeconds)),
+			MaxWallClockSeconds > 0.0f ? *FormatHoursMinutes(MaxWallClockSeconds) : TEXT("없음"),
+			SnapshotIntervalSeconds > 0.0f ? *FormatHoursMinutes(SnapshotIntervalSeconds) : TEXT("끔 (종료 시에만)"),
+			bSelfPlay ? TEXT("켬") : TEXT("끔"),
+			bOpponentMix ? *FString::Printf(TEXT("켬 (스냅샷 %d / 봇 %d 아레나)"), MixSnapshotArenas, MixBotArenas) : TEXT("끔"),
+			Units.Num(), Interactor->GetObservationVectorSize(), TrainerSettings.MaximumRecordedStepsPerIteration,
+			TrainingEnvironment->OutcomeReward, TrainingEnvironment->TeamSpirit,
+			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bTimeoutIsLossForBoth) ? TEXT("양쪽 패배") : TEXT("무승부"),
+			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bShrinkZone) ? TEXT("켬") : TEXT("끔"));
+		AppendDailyLog(FString());
+	}
+
+	// --- 상대 정책 (스냅샷 아레나의 팀 1) ---------------------------------------
+	if (OpponentUnits.Num() > 0 && !AssembleOpponent(OpponentUnits))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 상대 정책 조립 실패 — 조립을 중단한다."));
+		return;
+	}
+
+	// --- 평가 모드: 파이썬·학습기 없이 바로 에이전트 등록 -----------------------
+	if (bEvalMode)
+	{
+		Agents.Reset(Units.Num());
+		ArenaAgentIds.Reset();
+		for (ASH_RLCharacter* Unit : Units)
+		{
+			const int32 AgentId = Manager->AddAgent(Unit);
+			Agents.Add(Unit);
+			if (ASH_Arena* Arena = Cast<ASH_Arena>(Unit->CachedGym.Get()))
+			{
+				ArenaAgentIds.FindOrAdd(Arena).Add(AgentId);
+			}
+		}
+
+		// ★ 학습 때와 같은 고정 델타타임으로 돌린다(BeginTraining 이 하는 일). 끄면 프레임률에 따라
+		//   한 결정 사이의 시뮬레이션 시간이 달라져 학습 때와 다른 게임이 된다.
+		if (!bEvalRealtime)
+		{
+			UE::Learning::Agents::ApplyGameSettings(GameSettings, GetWorld(), EvalGameSettingsState);
+		}
+
+		bAssembled = true;
+		UE_LOG(LogTemp, Display,
+			TEXT("[SH_CombatTrainer] 평가 조립 완료 — 에이전트 %d, 아레나 %d, 상대 = %s."),
+			Agents.Num(), ArenaAgentIds.Num(),
+			bHasOpponents ? *FString::Printf(TEXT("스냅샷 '%s'"), *CurrentOpponentName)
+				: (bSelfPlay ? TEXT("같은 정책") : TEXT("팀 1 기본 컨트롤러(스크립트 봇)")));
+		return;
+	}
 
 	// --- 6. 파이썬 트레이너 프로세스 -----------------------------------------
 	UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer] 파이썬 트레이너 기동 — 모듈 '%s', 타임아웃 %.0f초"),
@@ -495,19 +887,41 @@ void ASH_CombatTrainer::Tick(float DeltaSeconds)
 		return;
 	}
 
-	if (!Trainer)
+	if (!Trainer && !bEvalMode)
 	{
 		return;
 	}
 
 	const double RealNow = FPlatformTime::Seconds();
 
+	// --- 평가 모드의 종료 조건 -------------------------------------------------
+	if (bEvalMode)
+	{
+		const bool bTimeUp = MaxWallClockSeconds > 0.0f && (RealNow - StartRealTime) >= MaxWallClockSeconds;
+		const bool bRoundsDone = EvalMaxRounds > 0 && TotalRounds >= EvalMaxRounds;
+		if (bTimeUp || bRoundsDone)
+		{
+			Report(RealNow - LastReportRealTime);
+			LogEvaluationSummary();
+			if (!bEvalRealtime)
+			{
+				UE::Learning::Agents::RevertGameSettings(EvalGameSettingsState, GetWorld());
+			}
+			bAssembled = false;
+			if (!GIsEditor)
+			{
+				FPlatformMisc::RequestExit(false);
+			}
+			return;
+		}
+	}
+
 	// ★★ IsTraining() 으로 **먼저** 걸러서는 안 된다.
 	//    RunTraining 이 첫 호출에서 BeginTraining 을 하므로, 시작 전에는 IsTraining() 이
 	//    false 다. 앞에서 걸러 버리면 학습이 영원히 시작되지 않고 에러도 나지 않는다 —
 	//    조립 로그까지는 정상으로 보이고 그 뒤로 아무 일도 일어나지 않는다.
 	//    (SH_HelloWorldTrainer.cpp:292 도 무조건 부르고, IsTraining 은 종료 판정에만 쓴다.)
-	if (bTrainingStarted && !Trainer->IsTraining())
+	if (!bEvalMode && bTrainingStarted && !Trainer->IsTraining())
 	{
 		UE_LOG(LogTemp, Warning,
 			TEXT("[SH_CombatTrainer] 학습이 종료됐다 (파이썬 프로세스 종료 또는 EndTraining). ")
@@ -517,12 +931,19 @@ void ASH_CombatTrainer::Tick(float DeltaSeconds)
 	}
 
 	// --- 벽시계 상한 --------------------------------------------------------
-	if (MaxWallClockSeconds > 0.0f && (RealNow - StartRealTime) >= MaxWallClockSeconds)
+	if (!bEvalMode && MaxWallClockSeconds > 0.0f && (RealNow - StartRealTime) >= MaxWallClockSeconds)
 	{
 		Report(RealNow - LastReportRealTime);
 		UE_LOG(LogTemp, Display,
 			TEXT("[SH_CombatTrainer] MaxWallClockSeconds(%.0f초) 도달 — 학습을 종료한다."),
 			MaxWallClockSeconds);
+
+		// 마지막 정책을 남긴다. EndTraining 뒤에는 네트워크가 더 갱신되지 않지만, 순서를 앞에 둬서
+		// 파이썬 종료 처리와 겹치지 않게 한다.
+		if (bTrainingStarted)
+		{
+			SaveVersionedSnapshot(/*bFinal=*/true);
+		}
 
 		Trainer->EndTraining();
 		bAssembled = false;
@@ -562,6 +983,19 @@ void ASH_CombatTrainer::Tick(float DeltaSeconds)
 
 			ShotsFiredTotal += Stats->ShotsFiredAccum;
 			ShotsHitTotal   += Stats->ShotsHitAccum;
+
+			// 역할별 지표 — 상대 혼합에서 어느 아레나가 학습을 끌어내리는지 가른다(TODO 1B.14).
+			{
+				const int32 RoleIndex = static_cast<int32>(GetArenaRole(Cast<ASH_Arena>(Unit->CachedGym.Get())));
+				RoleShots[RoleIndex]       += Stats->ShotsFiredAccum;
+				RoleHits[RoleIndex]        += Stats->ShotsHitAccum;
+				RoleDamageTaken[RoleIndex] += Stats->DamageTakenAccum;
+				RoleDamageDealt[RoleIndex] += Stats->DamageDealtAccum;
+				if (Stats->IsAlive() && Unit->bEntityEnabled)
+				{
+					++RoleAliveDecisions[RoleIndex];
+				}
+			}
 
 			if (Stats->IsAlive() && Unit->bEntityEnabled)
 			{
@@ -608,10 +1042,28 @@ void ASH_CombatTrainer::Tick(float DeltaSeconds)
 	//   ProcessExperience / RunInference(= GatherObservations + MakeActionModifiers +
 	//   EncodeObservations + EvaluatePolicy + DecodeAndSampleActions + PerformActions)
 	//   를 전부 부른다. 바깥에서 또 부르면 스텝이 이중 수집된다.
-	Trainer->RunTraining(TrainingSettings, GameSettings, /*bResetAgentsOnBegin=*/true, bResetAgentsOnUpdate);
-	bTrainingStarted = true;
+	if (bEvalMode)
+	{
+		TickEvaluation();
+	}
+	else
+	{
+		Trainer->RunTraining(TrainingSettings, GameSettings, /*bResetAgentsOnBegin=*/true, bResetAgentsOnUpdate);
+		bTrainingStarted = true;
 
-	ScanForNonFinite();
+		ScanForNonFinite();
+
+		// --- 버전별 스냅샷 ------------------------------------------------------
+		if (SnapshotIntervalSeconds > 0.0f && (RealNow - LastSnapshotRealTime) >= SnapshotIntervalSeconds)
+		{
+			SaveVersionedSnapshot(/*bFinal=*/false);
+			LastSnapshotRealTime = RealNow;
+		}
+	}
+
+	// ★ 학습 정책의 스텝(리셋 포함) 뒤에 부른다 — 이 프레임에 리셋된 아레나를 보고
+	//   상대 메모리를 지운 다음 상대 행동을 뽑아야 한다.
+	TickOpponents(RealNow);
 
 	// --- 리포트 -------------------------------------------------------------
 	if ((RealNow - LastReportRealTime) >= ReportInterval)
@@ -619,6 +1071,572 @@ void ASH_CombatTrainer::Tick(float DeltaSeconds)
 		Report(RealNow - LastReportRealTime);
 		LastReportRealTime = RealNow;
 	}
+}
+
+bool ASH_CombatTrainer::AssembleOpponent(const TArray<ABase_Character*>& OpponentUnits)
+{
+	if (!OpponentManager || !Policy)
+	{
+		return false;
+	}
+
+	OpponentManager->SetMaxAgentNum(FMath::Max(OpponentUnits.Num(), 1));
+
+	// 학습 정책과 같은 스키마의 Interactor/Policy. 학습기·크리틱·환경은 없다 —
+	// 리셋은 학습 쪽 환경이 아레나 전체를 리셋할 때 같이 되고, 메모리만 여기서 지운다(TickOpponents).
+	ULearningAgentsManager* OpponentManagerPtr = OpponentManager;
+	ULearningAgentsInteractor* OpponentInteractorPtr = ULearningAgentsInteractor::MakeInteractor(
+		OpponentManagerPtr, USH_ShooterInteractor::StaticClass(), TEXT("OpponentInteractor"));
+	OpponentInteractor = Cast<USH_ShooterInteractor>(OpponentInteractorPtr);
+	if (!OpponentInteractor)
+	{
+		return false;
+	}
+	OpponentInteractor->MemoryHorizonSeconds = Interactor->MemoryHorizonSeconds;
+	OpponentInteractor->HitMemoryHorizonSeconds = Interactor->HitMemoryHorizonSeconds;
+
+	OpponentPolicy = ULearningAgentsPolicy::MakePolicy(
+		OpponentManagerPtr, OpponentInteractorPtr, ULearningAgentsPolicy::StaticClass(), TEXT("OpponentPolicy"),
+		nullptr, nullptr, nullptr, true, true, true, FLearningAgentsPolicySettings(), Seed + 1);
+	if (!OpponentPolicy)
+	{
+		return false;
+	}
+
+	OpponentArenaAgentIds.Reset();
+	for (ABase_Character* Unit : OpponentUnits)
+	{
+		const int32 AgentId = OpponentManager->AddAgent(Unit);
+		if (ASH_Arena* Arena = Cast<ASH_Arena>(Unit->CachedGym.Get()))
+		{
+			OpponentArenaAgentIds.FindOrAdd(Arena).Add(AgentId);
+		}
+	}
+	bHasOpponents = true;
+
+	// 첫 상대.
+	if (bEvalMode)
+	{
+		if (!LoadOpponentSnapshot(EvalOpponentDir))
+		{
+			return false;
+		}
+		CurrentOpponentName = FPaths::GetCleanFilename(EvalOpponentDir);
+	}
+	else
+	{
+		SwapOpponent();
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[SH_CombatTrainer] 상대 정책 조립 — 유닛 %d, 아레나 %d, 첫 상대 '%s', 교체 주기 %.0f초."),
+		OpponentUnits.Num(), OpponentArenaAgentIds.Num(), *CurrentOpponentName, OpponentSwapSeconds);
+	return true;
+}
+
+bool ASH_CombatTrainer::LoadOpponentSnapshot(const FString& Directory)
+{
+	if (!OpponentPolicy)
+	{
+		return false;
+	}
+	const TCHAR* Files[] = { TEXT("policy.bin"), TEXT("encoder.bin"), TEXT("decoder.bin") };
+	for (const TCHAR* File : Files)
+	{
+		if (!FPaths::FileExists(SnapshotFile(Directory, File)))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 상대 스냅샷 파일이 없다: %s"), *SnapshotFile(Directory, File));
+			return false;
+		}
+	}
+	auto Load = [&Directory](ULearningAgentsNeuralNetwork* Network, const TCHAR* FileName)
+	{
+		FFilePath Path;
+		Path.FilePath = SnapshotFile(Directory, FileName);
+		Network->LoadNetworkFromSnapshot(Path);
+	};
+	Load(OpponentPolicy->GetPolicyNetworkAsset(),  TEXT("policy.bin"));
+	Load(OpponentPolicy->GetEncoderNetworkAsset(), TEXT("encoder.bin"));
+	Load(OpponentPolicy->GetDecoderNetworkAsset(), TEXT("decoder.bin"));
+	return true;
+}
+
+void ASH_CombatTrainer::RefreshOpponentPool()
+{
+	// 이 실행이 저장한 스냅샷 + 지정한 풀 폴더.
+	TArray<FString> Candidates = RunSnapshotDirs;
+	if (!OpponentPoolDir.IsEmpty())
+	{
+		// 풀 폴더 자체, 하위 폴더, 하위의 하위 폴더까지 본다
+		// (Snapshots/<날짜>/cum..., Snapshots/<날짜> 를 직접 지정, 옛 형식 Saved/SHSnapshots/<실행>/<경과>).
+		TFunction<void(const FString&, int32)> Visit = [&Visit, &Candidates](const FString& Dir, int32 Depth)
+		{
+			if (HasPolicyFile(Dir))
+			{
+				Candidates.Add(Dir);
+				return;
+			}
+			if (Depth >= 2)
+			{
+				return;
+			}
+			TArray<FString> SubDirs;
+			IFileManager::Get().FindFiles(SubDirs, *FPaths::Combine(Dir, TEXT("*")), /*Files=*/false, /*Directories=*/true);
+			SubDirs.Sort();
+			for (const FString& Sub : SubDirs)
+			{
+				Visit(FPaths::Combine(Dir, Sub), Depth + 1);
+			}
+		};
+		Visit(OpponentPoolDir, 0);
+	}
+
+	for (const FString& Dir : Candidates)
+	{
+		if (!OpponentPool.ContainsByPredicate([&Dir](const FSHOpponentEntry& Entry) { return Entry.Directory == Dir; }))
+		{
+			FSHOpponentEntry& Entry = OpponentPool.AddDefaulted_GetRef();
+			Entry.Directory = Dir;
+		}
+	}
+}
+
+void ASH_CombatTrainer::SwapOpponent()
+{
+	if (!OpponentPolicy || !Policy)
+	{
+		return;
+	}
+
+	RefreshOpponentPool();
+
+	if (OpponentPool.Num() == 0)
+	{
+		// ★ 풀이 비어 있으면(첫 스냅샷 전) 학습 정책의 지금 가중치를 복사해 얼린다.
+		//   "OpponentSwapSeconds 전의 나" 와 싸우는 셈이다.
+		OpponentPolicy->GetPolicyNetworkAsset()->LoadNetworkFromAsset(Policy->GetPolicyNetworkAsset());
+		OpponentPolicy->GetEncoderNetworkAsset()->LoadNetworkFromAsset(Policy->GetEncoderNetworkAsset());
+		OpponentPolicy->GetDecoderNetworkAsset()->LoadNetworkFromAsset(Policy->GetDecoderNetworkAsset());
+		CurrentOpponent = INDEX_NONE;
+		CurrentOpponentName = FString::Printf(TEXT("학습 정책 복사본(%.0f초)"), FPlatformTime::Seconds() - StartRealTime);
+	}
+	else
+	{
+		// ★ 상대 선택: OpponentLatestProbability 로 가장 최근 스냅샷, 나머지는 PFSP.
+		//   PFSP(AlphaStar) 가중치 (1 − p)², p = 그 상대에 대한 학습 정책 승률(사전 1승 1패).
+		//   지는 상대를 자주 만나게 해서 약점을 메우고, 이미 이기는 상대에 시간을 덜 쓴다.
+		int32 Pick = OpponentPool.Num() - 1;
+		if (MixRandom.FRand() >= OpponentLatestProbability)
+		{
+			TArray<double> Weights;
+			double Total = 0.0;
+			for (const FSHOpponentEntry& Entry : OpponentPool)
+			{
+				const double P = (Entry.LearnerWins + 1.0) / (Entry.Games + 2.0);
+				const double W = FMath::Square(1.0 - P) + 1e-3;
+				Weights.Add(W);
+				Total += W;
+			}
+			double Roll = MixRandom.FRand() * Total;
+			for (int32 Index = 0; Index < Weights.Num(); ++Index)
+			{
+				Roll -= Weights[Index];
+				if (Roll <= 0.0)
+				{
+					Pick = Index;
+					break;
+				}
+			}
+		}
+
+		if (!LoadOpponentSnapshot(OpponentPool[Pick].Directory))
+		{
+			return;
+		}
+		CurrentOpponent = Pick;
+		const FString Leaf = FPaths::GetCleanFilename(OpponentPool[Pick].Directory);
+		const FString Parent = FPaths::GetCleanFilename(FPaths::GetPath(OpponentPool[Pick].Directory));
+		CurrentOpponentName = Parent + TEXT("/") + Leaf;
+	}
+
+	// 상대 메모리를 지운다 — 다른 네트워크의 은닉 상태를 이어 쓰면 안 된다.
+	TArray<int32> Ids;
+	for (const TPair<TWeakObjectPtr<ASH_Arena>, TArray<int32>>& Pair : OpponentArenaAgentIds)
+	{
+		Ids.Append(Pair.Value);
+	}
+	if (Ids.Num() > 0 && OpponentManager)
+	{
+		OpponentManager->ResetAgents(Ids);
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer] 상대 교체 → '%s' (풀 %d개)"), *CurrentOpponentName, OpponentPool.Num());
+}
+
+void ASH_CombatTrainer::CollectRounds()
+{
+	for (const TWeakObjectPtr<ASH_Arena>& Weak : Arenas)
+	{
+		ASH_Arena* Arena = Weak.Get();
+		if (!Arena)
+		{
+			continue;
+		}
+		const int32 Before = PendingRounds.Num();
+		Arena->ConsumeRoundRecords(PendingRounds);
+
+		const ESHArenaRole ArenaRole = GetArenaRole(Arena);
+		for (int32 Index = Before; Index < PendingRounds.Num(); ++Index)
+		{
+			const FSHRoundRecord& Round = PendingRounds[Index];
+			const bool bLearnerWin = (Round.End == ESHRoundEnd::Team0Wins);
+
+			++TotalRounds;
+			switch (Round.End)
+			{
+			case ESHRoundEnd::Team0Wins:  ++TotalWins[0]; break;
+			case ESHRoundEnd::Team1Wins:  ++TotalWins[1]; break;
+			case ESHRoundEnd::Timeout:    ++TotalTimeouts; break;
+			case ESHRoundEnd::MutualWipe: ++TotalMutual; break;
+			default: break;
+			}
+
+			++RoleRounds[static_cast<int32>(ArenaRole)];
+			RoleLearnerWins[static_cast<int32>(ArenaRole)] += bLearnerWin ? 1 : 0;
+			RoleRoundDuration[static_cast<int32>(ArenaRole)] += Round.Duration;
+
+			// PFSP 전적: 지금 상대가 풀 항목일 때만 (복사본은 기록하지 않는다).
+			if (ArenaRole == ESHArenaRole::Snapshot && OpponentPool.IsValidIndex(CurrentOpponent))
+			{
+				++OpponentPool[CurrentOpponent].Games;
+				OpponentPool[CurrentOpponent].LearnerWins += bLearnerWin ? 1 : 0;
+			}
+		}
+	}
+}
+
+void ASH_CombatTrainer::TickOpponents(const double RealNow)
+{
+	CollectRounds();
+
+	// --- 새 라운드가 시작된 아레나 ------------------------------------------------
+	TArray<int32> ResetIds;
+	for (TPair<TWeakObjectPtr<ASH_Arena>, int32>& Pair : LastRoundIndex)
+	{
+		ASH_Arena* Arena = Pair.Key.Get();
+		if (!Arena || Arena->GetRoundIndex() == Pair.Value)
+		{
+			continue;
+		}
+		Pair.Value = Arena->GetRoundIndex();
+
+		const ESHArenaRole ArenaRole = GetArenaRole(Arena);
+		if (ArenaRole == ESHArenaRole::Snapshot)
+		{
+			// 상대 정책의 메모리(GRU)를 지운다. 학습 정책 쪽은 PPO 트레이너/평가 리셋이 지운다.
+			if (const TArray<int32>* Ids = OpponentArenaAgentIds.Find(Arena))
+			{
+				ResetIds.Append(*Ids);
+			}
+		}
+		else if (ArenaRole == ESHArenaRole::Bot && bOpponentMix)
+		{
+			// 봇 반응 지연을 라운드마다 다시 뽑는다 — 고정 0.25초를 공략하는 전략을 막는다.
+			for (const TWeakObjectPtr<ABase_Character>& Weak : Arena->GetTeamUnits(1))
+			{
+				const ABase_Character* Bot = Weak.Get();
+				if (ASH_ScriptBotController* Controller = Bot ? Cast<ASH_ScriptBotController>(Bot->GetController()) : nullptr)
+				{
+					Controller->ReactionDelay = MixRandom.FRandRange(BotReactionDelayRange.X, BotReactionDelayRange.Y);
+				}
+			}
+		}
+	}
+
+	if (!bHasOpponents || !OpponentPolicy)
+	{
+		return;
+	}
+
+	if (ResetIds.Num() > 0)
+	{
+		OpponentManager->ResetAgents(ResetIds);
+	}
+
+	// --- 상대 교체 (학습 중에만) ------------------------------------------------
+	if (!bEvalMode && (RealNow - LastOpponentSwapRealTime) >= OpponentSwapSeconds)
+	{
+		SwapOpponent();
+		LastOpponentSwapRealTime = RealNow;
+	}
+
+	OpponentPolicy->RunInference(1.0f);
+
+	// 상대 쪽 행동 통계는 쓰지 않는다 — 비워서 쌓이지 않게 한다.
+	USH_ShooterInteractor::FActionStats Discard;
+	OpponentInteractor->ConsumeActionStats(Discard);
+}
+
+void ASH_CombatTrainer::TickEvaluation()
+{
+	if (!Policy || !TrainingEnvironment || !Manager)
+	{
+		return;
+	}
+
+	// 첫 결정: 학습의 bResetAgentsOnBegin 과 같이 모든 아레나를 새 라운드로 시작한다.
+	if (!bEvalStarted)
+	{
+		TArray<int32> AllIds;
+		for (const TPair<TWeakObjectPtr<ASH_Arena>, TArray<int32>>& Pair : ArenaAgentIds)
+		{
+			AllIds.Append(Pair.Value);
+		}
+		Manager->ResetAgents(AllIds);
+		bEvalStarted = true;
+	}
+
+	// ★ 보상을 계산해 버린다. 학습은 하지 않지만 GatherAgentReward 가 유닛의 사격·피해 누산기를
+	//   비우는 유일한 곳이다. 안 부르면 누산기가 쌓여 Tick 의 사격 수 집계가 매 결정 중복된다.
+	//   준/받은 피해 지표도 여기서 모인다.
+	TrainingEnvironment->GatherRewards();
+
+	// 라운드가 끝난 아레나만 리셋한다. 학습에서는 PPO 트레이너가 완료(Termination)를 보고 하는 일이다.
+	// Manager->ResetAgents 는 정책 메모리를 지우고 환경의 ResetAgentEpisode → Gym->Reset 을 부른다.
+	for (const TPair<TWeakObjectPtr<ASH_Arena>, TArray<int32>>& Pair : ArenaAgentIds)
+	{
+		const ASH_Arena* Arena = Pair.Key.Get();
+		if (Arena && Arena->IsRoundOver())
+		{
+			Manager->ResetAgents(Pair.Value);
+		}
+	}
+
+	Policy->RunInference(EvalActionNoise);
+}
+
+void ASH_CombatTrainer::LogEvaluationSummary() const
+{
+	// RL 팀 = 팀 0 (self-play 면 두 팀 모두 같은 정책이라 50% 근처가 정상이다).
+	const int32 N = TotalRounds;
+	const double P = N > 0 ? static_cast<double>(TotalWins[0]) / N : 0.0;
+
+	// 95% 윌슨 구간 — 표본이 작거나 p 가 0/1 에 가까워도 범위를 벗어나지 않는다.
+	double Low = 0.0;
+	double High = 0.0;
+	if (N > 0)
+	{
+		const double Z = 1.96;
+		const double Z2 = Z * Z;
+		const double Denominator = 1.0 + Z2 / N;
+		const double Center = (P + Z2 / (2.0 * N)) / Denominator;
+		const double Half = Z * FMath::Sqrt(P * (1.0 - P) / N + Z2 / (4.0 * N * N)) / Denominator;
+		Low = FMath::Max(0.0, Center - Half);
+		High = FMath::Min(1.0, Center + Half);
+	}
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[SH_CombatTrainer] ===== 평가 결과 — 스냅샷 '%s' ====="), *EvalSnapshotDir);
+	UE_LOG(LogTemp, Display,
+		TEXT("[SH_CombatTrainer] 라운드 %d | 팀0(RL) 승 %d / 팀1 승 %d / 시간초과 %d / 동시전멸 %d | ")
+		TEXT("팀0 승률 %.1f%% (95%% 구간 %.1f ~ %.1f%%) | 행동 잡음 x%.2f | 상대 %s"),
+		N, TotalWins[0], TotalWins[1], TotalTimeouts, TotalMutual,
+		100.0 * P, 100.0 * Low, 100.0 * High, EvalActionNoise,
+		bHasOpponents ? *FString::Printf(TEXT("스냅샷 '%s'"), *CurrentOpponentName)
+			: (bSelfPlay ? TEXT("같은 정책") : TEXT("스크립트 봇")));
+}
+
+double ASH_CombatTrainer::GetCumulativeSeconds() const
+{
+	return CumulativeBaseSeconds + (FPlatformTime::Seconds() - StartRealTime);
+}
+
+void ASH_CombatTrainer::AppendDailyLog(const FString& Line)
+{
+	const FString Date = FDateTime::Now().ToString(TEXT("%Y-%m-%d"));
+	const FString DailyLogPath = FPaths::Combine(SnapshotRootDir, Date + TEXT(".md"));
+	IFileManager::Get().MakeDirectory(*SnapshotRootDir, /*Tree=*/true);
+
+	FString Text;
+	if (!FPaths::FileExists(DailyLogPath))
+	{
+		// ★ 수정사항은 코드가 알 수 없다 — 사람이(또는 작업한 사람이) 직접 적는 칸을 만들어 둔다.
+		//   실행 기록은 파일 끝에 덧붙이므로 반드시 마지막 절이어야 한다.
+		Text += FString::Printf(
+			TEXT("# %s 학습 기록\n\n")
+			TEXT("## 수정사항\n\n")
+			TEXT("(이 날 학습 코드·설정·환경에서 바뀐 점을 직접 적는다. 트레이너는 이 절을 건드리지 않는다.)\n\n")
+			TEXT("## 실행 기록\n\n")
+			TEXT("(아래는 트레이너가 자동으로 덧붙인다. 스냅샷은 %s/ 아래에 있다.)\n"),
+			*Date, *Date);
+	}
+	if (LastLogDate != Date)
+	{
+		// 이 실행이 이 날짜 파일에 처음 쓴다(실행 시작, 또는 자정을 넘김).
+		FString Header = RunLogHeader;
+		if (!LastLogDate.IsEmpty())
+		{
+			// 머리말 끝은 "- 스냅샷:" 이고 그 아래에 스냅샷 줄이 이어진다 — 표시는 그 앞에 넣는다.
+			Header.ReplaceInline(TEXT("- 스냅샷:\n"),
+				*FString::Printf(TEXT("- (%s 에서 이어지는 실행)\n- 스냅샷:\n"), *LastLogDate));
+		}
+		Text += Header;
+		LastLogDate = Date;
+	}
+	if (!Line.IsEmpty())
+	{
+		Text += Line + TEXT("\n");
+	}
+
+	FFileHelper::SaveStringToFile(Text, *DailyLogPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,
+		&IFileManager::Get(), FILEWRITE_Append);
+}
+
+void ASH_CombatTrainer::SaveVersionedSnapshot(bool bFinal)
+{
+	if (!Policy)
+	{
+		return;
+	}
+
+	const double Elapsed = FPlatformTime::Seconds() - StartRealTime;
+	const double Cumulative = CumulativeBaseSeconds + Elapsed;
+	const FString Date = FDateTime::Now().ToString(TEXT("%Y-%m-%d"));
+
+	// 폴더 이름 = 파일 이름 앞부분 = 누적 시간. 같은 이름이 이미 있으면(같은 스냅샷에서 두 번 이어 학습)
+	// 뒤에 _2, _3 을 붙인다 — 덮어쓰면 다른 실행의 결과가 사라진다.
+	const FString BaseName = TEXT("cum") + FormatHoursMinutes(Cumulative);
+	FString Name = BaseName;
+	FString Directory = FPaths::Combine(SnapshotRootDir, Date, Name);
+	for (int32 Suffix = 2; IFileManager::Get().DirectoryExists(*Directory); ++Suffix)
+	{
+		Name = FString::Printf(TEXT("%s_%d"), *BaseName, Suffix);
+		Directory = FPaths::Combine(SnapshotRootDir, Date, Name);
+	}
+	IFileManager::Get().MakeDirectory(*Directory, /*Tree=*/true);
+
+	auto Save = [&Directory, &Name](ULearningAgentsNeuralNetwork* Network, const TCHAR* FileName)
+	{
+		if (Network)
+		{
+			FFilePath Path;
+			Path.FilePath = FPaths::Combine(Directory, Name + TEXT("_") + FileName);
+			Network->SaveNetworkToSnapshot(Path);
+		}
+	};
+
+	Save(Policy->GetPolicyNetworkAsset(),  TEXT("policy.bin"));
+	Save(Policy->GetEncoderNetworkAsset(), TEXT("encoder.bin"));
+	Save(Policy->GetDecoderNetworkAsset(), TEXT("decoder.bin"));
+	if (Critic)
+	{
+		Save(Critic->GetCriticNetworkAsset(), TEXT("critic.bin"));
+	}
+
+	// 무엇으로 만든 스냅샷인지 남긴다. 평가·상대 풀에서 버전을 고를 때 쓴다.
+	// total_reward_steps 는 이어서 학습한 실행까지 합친 누적값이다(-SHResume 이 복원한다).
+	// cumulative_seconds 는 다음 -SHResume 이 누적 시간을 이어 세는 데 쓴다.
+	const FString Meta = FString::Printf(
+		TEXT("label=%s\nrun=%s\nsaved_at=%s\ncumulative_seconds=%.0f\nelapsed_seconds=%.0f\ndecisions=%d\nagents=%d\nselfplay=%d\noutcome_reward=%.3f\nteam_spirit=%.3f\nobs_size=%d\ntotal_reward_steps=%lld\nresumed_from=%s\n"),
+		bFinal ? TEXT("final") : TEXT("interval"), *SnapshotRunStamp,
+		*FDateTime::Now().ToString(TEXT("%Y-%m-%d %H:%M:%S")),
+		Cumulative, Elapsed, DecisionCount, Agents.Num(), bSelfPlay ? 1 : 0,
+		TrainingEnvironment ? TrainingEnvironment->OutcomeReward : -1.0f,
+		TrainingEnvironment ? TrainingEnvironment->TeamSpirit : -1.0f,
+		Interactor ? Interactor->GetObservationVectorSize() : -1,
+		TrainingEnvironment ? TrainingEnvironment->GetRewardStepCount() : -1LL,
+		ResumeDir.IsEmpty() ? TEXT("-") : *ResumeDir);
+	FFileHelper::SaveStringToFile(Meta, *FPaths::Combine(Directory, Name + TEXT("_meta.txt")));
+	RunSnapshotDirs.Add(Directory);
+
+	AppendDailyLog(FString::Printf(
+		TEXT("  - %s — 누적 **%s** → `%s/%s/` (이번 실행 %s, 결정 %d, 보상 스텝 누적 %lld)%s"),
+		*FDateTime::Now().ToString(TEXT("%H:%M")), *FormatHoursMinutes(Cumulative), *Date, *Name,
+		*FormatHoursMinutes(Elapsed), DecisionCount,
+		TrainingEnvironment ? TrainingEnvironment->GetRewardStepCount() : -1LL,
+		bFinal ? TEXT(" — 실행 종료") : TEXT("")));
+
+	UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer] 스냅샷 저장 — %s (누적 %s)"), *Directory, *FormatHoursMinutes(Cumulative));
+}
+
+bool ASH_CombatTrainer::LoadResumeSnapshot(const FString& Directory)
+{
+	if (!LoadPolicySnapshot(Directory))
+	{
+		return false;
+	}
+
+	// 크리틱이 없으면 가치 예측이 무작위에서 시작해 어드밴티지가 엉망이 된다 — 정책이 초반에 망가질 수 있다.
+	const FString CriticPath = SnapshotFile(Directory, TEXT("critic.bin"));
+	if (Critic && FPaths::FileExists(CriticPath))
+	{
+		FFilePath Path;
+		Path.FilePath = CriticPath;
+		Critic->GetCriticNetworkAsset()->LoadNetworkFromSnapshot(Path);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SH_CombatTrainer] critic.bin 이 없다 — 크리틱은 무작위에서 시작한다: %s"), *CriticPath);
+	}
+
+	// 보상 수집 누적 횟수 복원. meta.txt 의 total_reward_steps, 없으면 decisions x agents.
+	int64 Steps = 0;
+	TMap<FString, FString> Meta;
+	if (ReadSnapshotMeta(Directory, Meta))
+	{
+		const FString* Total = Meta.Find(TEXT("total_reward_steps"));
+		const FString* Decisions = Meta.Find(TEXT("decisions"));
+		const FString* AgentCount = Meta.Find(TEXT("agents"));
+		Steps = Total ? FCString::Atoi64(**Total)
+			: (Decisions && AgentCount ? FCString::Atoi64(**Decisions) * FCString::Atoi64(**AgentCount) : 0);
+	}
+	if (TrainingEnvironment)
+	{
+		TrainingEnvironment->SetRewardStepCount(Steps);
+	}
+
+	// 누적 학습 시간 — 스냅샷 이름(cum<누적>)과 날짜별 기록에 쓴다.
+	CumulativeBaseSeconds = ReadCumulativeSeconds(Directory);
+
+	UE_LOG(LogTemp, Display,
+		TEXT("[SH_CombatTrainer] 이어서 학습 준비 — 정책·인코더·디코더%s 불러옴, 누적 학습 %s, 보상 누적 %lld 회 복원 (셰이핑 x%.2f, 라운드 보상 x%.2f). 옵티마이저 상태는 새로 시작."),
+		FPaths::FileExists(CriticPath) ? TEXT("·크리틱") : TEXT(""), *FormatHoursMinutes(CumulativeBaseSeconds), Steps,
+		TrainingEnvironment ? TrainingEnvironment->GetShapingScale() : 0.0f,
+		TrainingEnvironment ? TrainingEnvironment->GetRoundRewardScale() : 0.0f);
+	return true;
+}
+
+bool ASH_CombatTrainer::LoadPolicySnapshot(const FString& Directory)
+{
+	if (!Policy)
+	{
+		return false;
+	}
+
+	const TCHAR* Files[] = { TEXT("policy.bin"), TEXT("encoder.bin"), TEXT("decoder.bin") };
+	for (const TCHAR* File : Files)
+	{
+		if (!FPaths::FileExists(SnapshotFile(Directory, File)))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 스냅샷 파일이 없다: %s"), *SnapshotFile(Directory, File));
+			return false;
+		}
+	}
+
+	// ★ 스키마가 다르면(예: Phase 2 이전 스냅샷) 엔진이 "Invalid Format" 오류를 낸다.
+	//   네트워크 입력 크기가 관측 인코딩 크기와 같아야 하기 때문이다.
+	auto Load = [&Directory](ULearningAgentsNeuralNetwork* Network, const TCHAR* FileName)
+	{
+		FFilePath Path;
+		Path.FilePath = SnapshotFile(Directory, FileName);
+		Network->LoadNetworkFromSnapshot(Path);
+	};
+	Load(Policy->GetPolicyNetworkAsset(),  TEXT("policy.bin"));
+	Load(Policy->GetEncoderNetworkAsset(), TEXT("encoder.bin"));
+	Load(Policy->GetDecoderNetworkAsset(), TEXT("decoder.bin"));
+
+	UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer] 스냅샷을 불러왔다 — %s"), *Directory);
+	return true;
 }
 
 void ASH_CombatTrainer::ScanForNonFinite()
@@ -696,19 +1714,24 @@ void ASH_CombatTrainer::Report(double RealElapsed)
 
 	// --- 라운드 지표 (대치 감지) ----------------------------------------------
 	// ★ 시간 초과 비율, 첫 피해까지 시간, 최근접 적 거리가 같이 오르면 대치다.
-	TArray<FSHRoundRecord> Rounds;
+	// 라운드 기록은 CollectRounds 가 매 결정 모아 둔다(상대별 전적을 정확히 나누기 위해).
+	CollectRounds();
+	TArray<FSHRoundRecord> Rounds = MoveTemp(PendingRounds);
+	PendingRounds.Reset();
+
 	double ZoneDamageOnAgents = 0.0;
 	for (const TWeakObjectPtr<ASH_Arena>& Weak : Arenas)
 	{
 		if (ASH_Arena* Arena = Weak.Get())
 		{
-			Arena->ConsumeRoundRecords(Rounds);
 			for (int32 Team = 0; Team < 2; ++Team)
 			{
 				const float Zone = Arena->ConsumeZoneDamage(Team);
-				if (AgentTeamMask & (1 << Team))
+				// 학습 정책이 조종하는 팀만 — 스냅샷/봇 아레나의 팀 1 은 받은 피해 분모에 없다.
+				if (IsLearnerTeam(Arena, Team))
 				{
 					ZoneDamageOnAgents += Zone;
+					RoleZoneDamage[static_cast<int32>(GetArenaRole(Arena))] += Zone;
 				}
 			}
 		}
@@ -799,6 +1822,51 @@ void ASH_CombatTrainer::Report(double RealElapsed)
 		Rounds.Num(), RoundWins[0], RoundWins[1], RoundTimeouts, TimeoutRate, RoundMutual,
 		MeanRoundDuration, MeanFirstDamage, MeanNearestEnemy);
 
+	// 역할별 전적 (학습 정책 = 팀 0 의 승). 혼합이나 평가 상대가 있을 때만.
+	if (bOpponentMix || bHasOpponents)
+	{
+		auto Rate = [this](const int32 ArenaRole) -> double
+		{
+			return RoleRounds[ArenaRole] > 0 ? 100.0 * RoleLearnerWins[ArenaRole] / RoleRounds[ArenaRole] : 0.0;
+		};
+		UE_LOG(LogTemp, Display,
+			TEXT("[SH_CombatTrainer]        상대별 — self-play %d라운드 | 스냅샷 '%s' %d라운드 승률 %.0f%% | 봇 %d라운드 승률 %.0f%%"),
+			RoleRounds[0], *CurrentOpponentName, RoleRounds[1], Rate(1), RoleRounds[2], Rate(2));
+		// 역할별 전투 지표. 받은/준 피해는 "살아 있는 결정 1,000회당" — 전체 지표와 같은 단위.
+		static const TCHAR* RoleNames[3] = { TEXT("self-play"), TEXT("스냅샷"), TEXT("봇") };
+		FString Line;
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			if (RoleAliveDecisions[Index] == 0 && RoleRounds[Index] == 0)
+			{
+				continue;
+			}
+			const double PerK = RoleAliveDecisions[Index] > 0 ? 1000.0 / RoleAliveDecisions[Index] : 0.0;
+			Line += FString::Printf(TEXT("%s%s: 명중 %.1f%% 받음 %.0f(구역 %.0f%%) 줌 %.0f 길이 %.1f초"),
+				Line.IsEmpty() ? TEXT("") : TEXT(" | "),
+				RoleNames[Index],
+				RoleShots[Index] > 0 ? 100.0 * RoleHits[Index] / RoleShots[Index] : 0.0,
+				RoleDamageTaken[Index] * PerK,
+				RoleDamageTaken[Index] > 0.0 ? 100.0 * RoleZoneDamage[Index] / RoleDamageTaken[Index] : 0.0,
+				RoleDamageDealt[Index] * PerK,
+				RoleRounds[Index] > 0 ? RoleRoundDuration[Index] / RoleRounds[Index] : 0.0);
+		}
+		UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer]        역할별 — %s"), *Line);
+
+		for (int32 ArenaRole = 0; ArenaRole < 3; ++ArenaRole)
+		{
+			RoleRounds[ArenaRole] = 0;
+			RoleLearnerWins[ArenaRole] = 0;
+			RoleShots[ArenaRole] = 0;
+			RoleHits[ArenaRole] = 0;
+			RoleDamageTaken[ArenaRole] = 0.0;
+			RoleDamageDealt[ArenaRole] = 0.0;
+			RoleZoneDamage[ArenaRole] = 0.0;
+			RoleRoundDuration[ArenaRole] = 0.0;
+			RoleAliveDecisions[ArenaRole] = 0;
+		}
+	}
+
 	// 발사 가능한 결정이 전체의 몇 퍼센트인지. 고정값이 아니다 —
 	// ★ 정책이 기회를 건너뛰면 쿨다운이 안 걸려서 이 비율이 **올라간다.**
 	//   즉 사용률과 이 값은 반대로 움직여야 정상이다. 같은 방향으로 가면 카운터가 틀린 것이다.
@@ -833,6 +1901,11 @@ void ASH_CombatTrainer::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer] EndPlay — EndTraining() 호출."));
 		Trainer->EndTraining();
+	}
+
+	if (bEvalMode && bAssembled && !bEvalRealtime)
+	{
+		UE::Learning::Agents::RevertGameSettings(EvalGameSettingsState, GetWorld());
 	}
 
 	bAssembled = false;

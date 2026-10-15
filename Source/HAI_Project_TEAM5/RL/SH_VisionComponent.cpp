@@ -2,7 +2,9 @@
 
 #include "SH_VisionComponent.h"
 
+#include "Base_Character.h"
 #include "Combat/CombatStatsComponent.h"
+#include "SH_Arena.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/Controller.h"
@@ -61,6 +63,7 @@ void USH_VisionComponent::Scan(bool bForce)
 	bHostileVisible = false;
 	HostileAngleDeg = 0.0f;
 	HostileDepth01  = 1.0f;
+	VisibleEnemies.Reset();
 
 	FVector Eye;
 	FRotator Aim;
@@ -92,6 +95,13 @@ void USH_VisionComponent::Scan(bool bForce)
 		FSHVisionRay& Ray = Rays[Index];
 		Ray.Depth01 = bHit ? FMath::Clamp(Hit.Distance / MaxRange, 0.0f, 1.0f) : 1.0f;
 		Ray.bHostile = bHit && UCombatStatsComponent::AreHostile(Owner, Hit.GetActor());
+		Ray.bAlly = false;
+		if (bHit && !Ray.bHostile && Hit.GetActor() != Owner)
+		{
+			const UCombatStatsComponent* MyStats = UCombatStatsComponent::FindOn(Owner);
+			const UCombatStatsComponent* HitStats = UCombatStatsComponent::FindOn(Hit.GetActor());
+			Ray.bAlly = MyStats && HitStats && MyStats->TeamId == HitStats->TeamId;
+		}
 
 		// 가장 가까운 적대 레이를 대표로 삼는다.
 		if (Ray.bHostile && Ray.Depth01 < BestDepth)
@@ -105,19 +115,81 @@ void USH_VisionComponent::Scan(bool bForce)
 #if ENABLE_DRAW_DEBUG
 		if (bDrawDebug)
 		{
+			// 적 = 빨강, 아군 = 파랑, 벽·엄폐물 = 회색, 아무것도 안 맞음 = 어두운 회색
 			const FColor Color = Ray.bHostile ? FColor::Red
-				: (bHit ? FColor(120, 120, 60) : FColor(50, 60, 70));
+				: (Ray.bAlly ? FColor(60, 120, 255) : (bHit ? FColor(150, 150, 150) : FColor(50, 60, 70)));
 			DrawDebugLine(World, Eye, bHit ? Hit.ImpactPoint : End, Color,
-				false, -1.0f, 0, Ray.bHostile ? 2.5f : 1.0f);
+				false, DebugDrawLifetime, 0, Ray.bHostile ? 2.5f : 1.0f);
 		}
 #endif
 	}
+
+	// ★ 아레나 소속이면 적 인식을 직접 트레이스로 덮어쓴다(헤더 주석). 레이 기준 값은
+	//   아레나 밖(테스트 배치 유닛)에서만 쓰인다.
+	ScanEnemies(Eye, Aim);
 
 	if (bHostileVisible)
 	{
 		LastSeenAngleDeg = HostileAngleDeg;
 		LastSeenTime     = World->GetTimeSeconds();
 	}
+}
+
+void USH_VisionComponent::ScanEnemies(const FVector& Eye, const FRotator& Aim)
+{
+	VisibleEnemies.Reset();
+
+	const ABase_Character* OwnerUnit = Cast<ABase_Character>(GetOwner());
+	const ASH_Arena* Arena = OwnerUnit ? Cast<ASH_Arena>(OwnerUnit->CachedGym.Get()) : nullptr;
+	if (!Arena || !OwnerUnit->CombatStats)
+	{
+		return;
+	}
+
+	const int32 EnemyTeam = 1 - static_cast<int32>(OwnerUnit->CombatStats->TeamId);
+	for (const TWeakObjectPtr<ABase_Character>& Weak : Arena->GetTeamUnits(EnemyTeam))
+	{
+		const ABase_Character* Enemy = Weak.Get();
+		if (!Enemy || !Enemy->bEntityEnabled || !Enemy->CombatStats || !Enemy->CombatStats->IsAlive())
+		{
+			continue;
+		}
+
+		// 시야각·사거리·차폐를 한 곳에서 판정한다 — 스크립트 봇과 같은 함수다.
+		FName Blocker;
+		if (ClassifyVisibility(Enemy, Blocker) != ESHVisionResult::Visible)
+		{
+			continue;
+		}
+
+		const FVector EnemyEye = Enemy->GetActorLocation() + FVector(0.0f, 0.0f, EyeHeight);
+		const FVector ToEnemy = EnemyEye - Eye;
+
+		FSHVisibleEnemy& Entry = VisibleEnemies.AddDefaulted_GetRef();
+		Entry.Actor = const_cast<ABase_Character*>(Enemy);
+		Entry.AngleDeg = FMath::FindDeltaAngleDegrees(Aim.Yaw, ToEnemy.Rotation().Yaw);
+		Entry.Depth01 = FMath::Clamp(ToEnemy.Size() / MaxRange, 0.0f, 1.0f);
+		Entry.HPRatio = Enemy->CombatStats->GetHPRatio();
+
+		// 그 적의 조준선(컨트롤 회전)이 나를 향한 방향에서 얼마나 벗어나 있는가.
+		const AController* EnemyController = Enemy->GetController();
+		const float EnemyAimYaw = EnemyController ? EnemyController->GetControlRotation().Yaw : Enemy->GetActorRotation().Yaw;
+		Entry.FacingDeg = FMath::Abs(FMath::FindDeltaAngleDegrees(EnemyAimYaw, (-ToEnemy).Rotation().Yaw));
+
+#if ENABLE_DRAW_DEBUG
+		// 관측의 "보이는 적" 집합에 들어간 적 — 초록 선.
+		if (bDrawDebug)
+		{
+			DrawDebugLine(GetWorld(), Eye, EnemyEye, FColor::Green, false, DebugDrawLifetime, 0, 2.0f);
+		}
+#endif
+	}
+
+	VisibleEnemies.Sort([](const FSHVisibleEnemy& A, const FSHVisibleEnemy& B) { return A.Depth01 < B.Depth01; });
+
+	bHostileVisible = VisibleEnemies.Num() > 0;
+	HostileAngleDeg = bHostileVisible ? VisibleEnemies[0].AngleDeg : 0.0f;
+	HostileDepth01  = bHostileVisible ? VisibleEnemies[0].Depth01 : 1.0f;
 }
 
 bool USH_VisionComponent::CanSeeActor(const AActor* Target) const
@@ -215,6 +287,7 @@ void USH_VisionComponent::ResetMemory()
 	LastSeenAngleDeg = 0.0f;
 	LastSeenTime     = -1000.0f;
 	LastScanFrame    = 0;
+	VisibleEnemies.Reset();
 
 	for (FSHVisionRay& Ray : Rays)
 	{

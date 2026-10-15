@@ -31,6 +31,34 @@ struct FSHVisionRay
 	/** 이 레이가 적대 유닛에 닿았는가. */
 	UPROPERTY(BlueprintReadOnly, Category = "SH|Vision")
 	bool bHostile = false;
+
+	/** 이 레이가 아군 유닛에 닿았는가. 아군도 총알을 막으므로 벽과 구별해야 한다
+	 *  (아군 등에 대고 쏘는 사격을 피하려면 정책이 이걸 알아야 한다). */
+	UPROPERTY(BlueprintReadOnly, Category = "SH|Vision")
+	bool bAlly = false;
+};
+
+/**
+ *  시야에 들어온 적 하나. 직접 트레이스(ClassifyVisibility == Visible)로 확인한 것만 담긴다.
+ *  ★ 스크립트 봇의 표적 조건(CanSeeActor)과 같은 판정이다 — 부채꼴 레이 사이로 먼 적이
+ *  빠지는 비대칭(헤더 아래 주석)이 이것으로 사라진다.
+ */
+struct FSHVisibleEnemy
+{
+	TWeakObjectPtr<AActor> Actor;
+
+	/** 조준선 기준 부호 있는 각(도). 왼쪽이 음수. 레이 각도가 아니라 표적 중심까지의 연속값이다. */
+	float AngleDeg = 0.0f;
+
+	/** 거리 / MaxRange. */
+	float Depth01 = 1.0f;
+
+	float HPRatio = 1.0f;
+
+	/** 그 적의 조준선이 나를 기준으로 얼마나 벗어나 있는가(도). 0 = 정확히 나를 보고 있다.
+	 *  ★ 눈에 보이는 정보다(상대가 어디를 보는지는 화면에서 보인다). 먼저 나갈지 기다릴지를
+	 *  정하는 근거가 된다. */
+	float FacingDeg = 180.0f;
 };
 
 /**
@@ -46,11 +74,11 @@ struct FSHVisionRay
  *   - RL 유닛: Scan() 의 부채꼴 전체가 관측 벡터가 된다 (16개 레이).
  *   - 스크립트 봇: CanSeeActor() 로 후보를 하나씩 점 조회한다 (레이 1발).
  *
- *  ★ 남는 비대칭 하나: 부채꼴은 이산적이라 레이 사이로 적이 빠질 수 있다.
- *  90도 / 16레이 = 6도 간격인데, 거리 1200 에서 캡슐(반경 42)이 차지하는 각은 약 4도다.
- *  즉 멀리 있는 적은 RL 유닛의 부채꼴에서 누락될 수 있지만 CanSeeActor 는 잡아낸다.
- *  전지적 상태보다는 훨씬 작은 차이이고, "멀리 있는 적은 놓칠 수 있다" 는 오히려
- *  자연스러운 성질이라 그대로 둔다. RayCount 를 올리면 좁혀진다.
+ *  ★ 부채꼴은 이산적이라 레이 사이로 적이 빠질 수 있다 (90도 / 16레이 = 6도 간격,
+ *  거리 1200 에서 캡슐이 차지하는 각은 약 4도). 그래서 2026-10-08(Phase 2)부터 **적 인식은
+ *  레이가 아니라 적마다 쏘는 직접 트레이스**(ScanEnemies → ClassifyVisibility)로 한다.
+ *  스크립트 봇의 CanSeeActor 와 같은 판정이라 비대칭이 사라진다. 부채꼴은 지형(벽·엄폐물·아군의
+ *  위치)을 보는 용도로 남는다.
  */
 UCLASS(ClassGroup = (SH), meta = (BlueprintSpawnableComponent))
 class HAI_PROJECT_TEAM5_API USH_VisionComponent : public UActorComponent
@@ -89,6 +117,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SH|Debug")
 	bool bDrawDebug = false;
 
+	/** 그린 선이 남는 시간(초). 스캔은 결정 주기(0.05초)마다라서 그보다 조금 길게 둬야 깜박이지 않는다. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SH|Debug", meta = (ClampMin = "0.0"))
+	float DebugDrawLifetime = 0.06f;
+
 	//~ API -------------------------------------------------------------------
 
 	/**
@@ -102,6 +134,9 @@ public:
 	void Scan(bool bForce = false);
 
 	const TArray<FSHVisionRay>& GetRays() const { return Rays; }
+
+	/** 마지막 Scan 에서 보인 적, 가까운 순. 아레나 소속이 아니면 비어 있다. */
+	const TArray<FSHVisibleEnemy>& GetVisibleEnemies() const { return VisibleEnemies; }
 
 	/**
 	 *  이 액터가 시야각 안에 있고 총알이 닿는가. 레이 **1발**.
@@ -120,10 +155,12 @@ public:
 	 */
 	ESHVisionResult ClassifyVisibility(const AActor* Target, FName& OutBlocker) const;
 
+	/** 적이 하나라도 보이는가. 아레나 소속이면 직접 트레이스 기준(가장 가까운 보이는 적),
+	 *  아니면 부채꼴 레이 기준이다. */
 	UFUNCTION(BlueprintPure, Category = "SH|Vision")
 	bool IsHostileVisible() const { return bHostileVisible; }
 
-	/** 조준선 기준 부호 있는 각(도). 왼쪽이 음수. 보일 때만 의미가 있다. */
+	/** 가장 가까운 보이는 적의 조준선 기준 부호 있는 각(도). 왼쪽이 음수. 보일 때만 의미가 있다. */
 	UFUNCTION(BlueprintPure, Category = "SH|Vision")
 	float GetHostileAngleDeg() const { return HostileAngleDeg; }
 
@@ -150,7 +187,12 @@ public:
 	void ResetMemory();
 
 private:
+	/** 소속 아레나의 적 팀 유닛을 하나씩 직접 트레이스로 확인해 VisibleEnemies 를 채운다.
+	 *  시야각·사거리 밖은 트레이스 전에 걸러진다. 적 10명이면 최대 10발. */
+	void ScanEnemies(const FVector& Eye, const FRotator& Aim);
+
 	TArray<FSHVisionRay> Rays;
+	TArray<FSHVisibleEnemy> VisibleEnemies;
 
 	bool  bHostileVisible  = false;
 	float HostileAngleDeg  = 0.0f;

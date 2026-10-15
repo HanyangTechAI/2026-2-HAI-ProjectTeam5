@@ -195,6 +195,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SH|Round")
 	bool bTimeoutIsLossForBoth = true;
 
+	/**
+	 *  이 아레나에서 승패 보상(과 거기서 유도되는 시계 비용)에 곱하는 배율. 런타임에 학습기가 정한다.
+	 *
+	 *  ★ 같은 정책끼리 싸우는 아레나에서는 승패가 개별 행동과 상관이 약해 잡음만 더한다(TODO 1B.9).
+	 *  상대가 고정된 아레나(과거 스냅샷 · 스크립트 봇)에서는 승률이 실력에 따라 움직이므로 신호가 된다.
+	 *  그래서 상대 혼합(ASH_CombatTrainer::bOpponentMix)에서는 self-play 아레나만 0 으로 둔다.
+	 */
+	float OutcomeRewardScale = 1.0f;
+
 	/** 축소 구역을 쓸지. 끄면 안전 반경이 항상 ArenaRadius 다. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SH|Round|Zone")
 	bool bShrinkZone = true;
@@ -304,6 +313,22 @@ public:
 	float GetZoneRadius() const;
 
 	bool IsRoundOver() const { return RoundEnd != ESHRoundEnd::None; }
+
+	/**
+	 *  라운드 리셋. 이 아레나의 유닛(팀별 풀)을 리셋·활성화하고 스폰 슬롯 배치와 BeginRound 를 한다.
+	 *
+	 *  ★★ Gym->Reset() 대신 이걸 쓴다 (2026-10-10). 엔진의 ULearningAgentsEntitiesManagerComponent::
+	 *  ResetLearningComponent 는 엔티티 i 를 리셋할 때마다 "SpawnCount − i − 1 개 추가 스폰" 을 요청한다.
+	 *  풀이 전부 활성 상태면 빌려 올 비활성 엔티티가 없어서 **새 액터를 만든다** — 첫 리셋에서 팀당
+	 *  9+8+…+1 = 45개가 생기고 루프 끝에서 비활성화된다. 실측: 유닛 액터 320 이 아니라 1,760
+	 *  (16 아레나 x 2팀 x 55). 비활성 유닛은 숨겨지지만 각자의 총(별도 액터)은 보이고, CollectUnits 가
+	 *  그 유닛까지 세서 팀 인원이 55 가 되었다(관측의 생존 비율이 ÷55, 스폰 슬롯이 55명 기준).
+	 */
+	void ResetRound();
+
+	/** 시작된 라운드 수. 리셋마다 1 씩 는다 — 학습기가 "새 라운드가 시작됐다" 를 감지하는 데 쓴다
+	 *  (상대 정책의 메모리 초기화, 봇 반응 지연 재추첨). */
+	int32 GetRoundIndex() const { return RoundIndex; }
 	ESHRoundEnd GetRoundEnd() const { return RoundEnd; }
 
 	/**
@@ -407,6 +432,7 @@ private:
 	int32 AliveCount[2] = { 0, 0 };
 
 	float RoundStartTime = 0.0f;
+	int32 RoundIndex = 0;
 	ESHRoundEnd RoundEnd = ESHRoundEnd::None;
 	float FirstDamageTime = -1.0f;
 	float ZoneDamageTimer = 0.0f;

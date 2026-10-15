@@ -192,6 +192,12 @@ public:
 	 */
 	void ConsumeDamageStats(double& OutDamageTaken, double& OutDamageDealt, int64& OutGathers);
 
+	/** 보상 수집 누적 횟수. 셰이핑 감쇠와 라운드 보상 램프가 이 값으로 계산된다. */
+	int64 GetRewardStepCount() const { return RewardStepCount; }
+
+	/** 이어서 학습할 때 복원한다(ASH_CombatTrainer -SHResume). 안 하면 셰이핑이 1.0, 램프가 0 으로 돌아간다. */
+	void SetRewardStepCount(const int64 InCount) { RewardStepCount = FMath::Max<int64>(0, InCount); }
+
 protected:
 	ASH_RLCharacter* ResolveUnit(const int32 AgentId) const;
 

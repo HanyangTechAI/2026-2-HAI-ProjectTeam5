@@ -15,28 +15,50 @@ namespace SHRL
 	 *  다르면 관측 벡터 크기가 어긋난다 — Specify 에서 검사한다. */
 	constexpr int32 RayCount = 16;
 
-	/** 조준 각속도 구간 수. 인덱스 i → (i - TurnBins/2) / (TurnBins/2) 배율. */
-	constexpr int32 TurnBins = 5;   // -1, -0.5, 0, +0.5, +1
+	/**
+	 *  조준 각속도 구간 수. 배율은 .cpp 의 TurnRateFractions (MaxTurnRateDeg 180 기준
+	 *  −180, −45, −10, 0, +10, +45, +180 °/s).
+	 *
+	 *  ★ 5구간(±90, ±180)이던 때는 결정당 최소 회전이 90°/s × 0.05초 = 4.5° 였다. 2,400 cm 거리의
+	 *  적 캡슐 폭은 약 2.0° 라 멀리 있는 적에게 조준을 맞출 수 없었다. ±10°/s 면 결정당 0.5°.
+	 *  ★ 중앙(TurnBins/2)이 0 이어야 한다 — 사망 마스크가 중앙과 그 왼쪽을 남긴다.
+	 */
+	constexpr int32 TurnBins = 7;
 
 	/** 이동 방향 수: 정지 / 전진 / 후진 / 좌 / 우. */
 	constexpr int32 MoveBins = 5;
+
+	/** 보이는 적 집합의 최대 크기 = 적 팀 인원. 아레나 UnitsPerTeam 보다 작으면 넘치는 적이 잘린다. */
+	constexpr int32 MaxEnemies = 10;
+
+	/** 아군 집합의 최대 크기 = 팀 인원 − 1(자신). */
+	constexpr int32 MaxAllies = 9;
 }
 
 /**
  *  시야 제한 사격 정책의 관측/행동 스키마.
  *
  *  관측 Root {
- *    Fan:    StaticArray(16 x Struct{ RayDepth:Float, RayHostile:Bool })
- *    Enemy:  Optional( Struct{ EnemyAngle:Angle, EnemyDepth:Float }, EncodingSize 32 )
- *    Memory: Struct{ TimeSince:Float(Scale = MemoryHorizon), LastAngle:Angle }
- *    Hit:    Struct{ TimeSinceHit:Float(Scale = HitMemoryHorizon), HitAngle:Angle }
- *    Team:   Struct{ AlliesAlive, EnemiesAlive, RoundProgress, ZoneRadius, ZoneMargin }  (전부 Float, 0~1 근처)
- *    Self:   Struct{ HPRatio:Float, CanFire:Bool }
+ *    Fan:     StaticArray(16 x Struct{ RayDepth:Float, RayHostile:Bool, RayAlly:Bool })
+ *    Enemies: Set(최대 10, 어텐션){ EnemyAngle:Angle, EnemyDepth:Float, EnemyHP:Float, EnemyFacing:Angle }
+ *    Allies:  Set(최대 9, 어텐션){ AllyAngle:Angle, AllyDistance:Float, AllyHP:Float }
+ *    Memory:  Struct{ TimeSince:Float(Scale = MemoryHorizon), LastAngle:Angle }
+ *    Hit:     Struct{ TimeSinceHit:Float(Scale = HitMemoryHorizon), HitAngle:Angle }
+ *    Team:    Struct{ AlliesAlive, EnemiesAlive, RoundProgress, ZoneRadius, ZoneMargin }  (전부 Float, 0~1 근처)
+ *    Self:    Struct{ HPRatio:Float, CanFire:Bool }
  *  }
- *  행동 Root { Turn:ExclusiveDiscrete(5), Move:ExclusiveDiscrete(5), Fire:Bool(prior 0.3) }
+ *  행동 Root { Turn:ExclusiveDiscrete(7), Move:ExclusiveDiscrete(5), Fire:Bool(prior 0.3) }
  *
- *  ★ 적 좌표를 주지 않는다. Optional 이 "지금 적이 보이는가" 를 스키마 차원에서 표현한다 —
- *  bVisible 불리언 + 0 채우기 같은 수작업이 필요 없다.
+ *  ★ 2026-10-08 Phase 2 스키마 (10대10 인지). 이전 스키마로 저장한 스냅샷은 더 이상 불러올 수 없다.
+ *   - Enemy(Optional, 가장 가까운 적 하나) → **Enemies(Set)**. 보이는 적 전원을 직접 트레이스로
+ *     확인해 담는다(USH_VisionComponent::ScanEnemies). 스크립트 봇의 CanSeeActor 와 같은 판정이다.
+ *   - **Allies(Set)**: 아군 위치·HP. 사용자 결정(2026-10-02)에 따라 아군 정보는 시야와 무관하게 준다.
+ *   - **RayAlly**: 레이가 아군에 닿았는가. 아군 캡슐도 총알을 막으므로 벽과 구별해야 한다.
+ *   - Turn 5 → 7구간 (SHRL::TurnBins 주석).
+ *
+ *  ★ 적 좌표를 주지 않는다. 보이는 적만 집합에 들어가고, 집합이 비면 "아무도 안 보인다" 다.
+ *  빈 집합은 어텐션 집계가 0 벡터 + 원소 수 0 을 내므로 안전하다
+ *  (nne_runtime_basic_cpu_pytorch.py AggregateSet 의 _softmax_plus_one_masked).
  *
  *  ★★ Hit 가 **후방 위협을 담는 유일한 관측**이다 (2026-10-01 추가).
  *  Fan 은 FOVDegrees(90도) 안만 보므로 뒤에서 쏘는 적은 관측에 전혀 나타나지 않는다.
@@ -45,7 +67,7 @@ namespace SHRL
  *
  *  ★ Hit 를 Optional 로 하지 않은 이유. "한 번도 안 맞았다" 는
  *  TimeSinceHit = HitMemoryHorizon (포화) 으로 표현된다 — Memory 그룹이 쓰는 방식과 같고,
- *  Optional 은 유니온 오버헤드로 2 float 을 더 쓴다 (Enemy 가 3 대신 5 를 쓰는 이유).
+ *  Optional 은 유니온 오버헤드로 2 float 을 더 쓴다.
  *
  *  ★★ Conv1d 를 쓰지 않는 이유 (계획에서 변경).
  *  SpecifyConv1dObservation 은 C++ 쪽에는 있지만 **파이썬 트레이너가 구현하지 않았다.**
@@ -65,9 +87,16 @@ class HAI_PROJECT_TEAM5_API USH_ShooterInteractor : public ULearningAgentsIntera
 	GENERATED_BODY()
 
 public:
-	/** Optional(적) 의 인코딩 크기. 스키마에 굳어지므로 나중에 못 바꾼다. */
+	/** 집합(Enemies/Allies) 어텐션 설정. 스키마에 굳어지므로 나중에 못 바꾼다.
+	 *  집합 하나의 인코딩 크기 = AttentionHeadNum x ValueEncodingSize + 1(원소 수). */
 	UPROPERTY(EditAnywhere, Category = "SH|RL|Schema", meta = (ClampMin = "1"))
-	int32 EnemyEncodingSize = 32;
+	int32 SetAttentionEncodingSize = 16;
+
+	UPROPERTY(EditAnywhere, Category = "SH|RL|Schema", meta = (ClampMin = "1"))
+	int32 SetAttentionHeadNum = 4;
+
+	UPROPERTY(EditAnywhere, Category = "SH|RL|Schema", meta = (ClampMin = "1"))
+	int32 SetValueEncodingSize = 16;
 
 	/**
 	 *  시야 기억 지평(초). TimeSince 관측의 Float 정규화 Scale 로 쓴다.

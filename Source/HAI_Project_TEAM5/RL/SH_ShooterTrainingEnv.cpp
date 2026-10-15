@@ -190,13 +190,14 @@ void USH_ShooterTrainingEnv::GatherAgentReward_Implementation(float& OutReward, 
 	// ★ 진행 중인 스텝에는 시계 비용을 뺀다 — 죽은 에이전트 포함(헤더 bRoundClockCost 참조).
 	if (const ASH_Arena* Arena = Cast<ASH_Arena>(Unit->CachedGym.Get()))
 	{
+		// 아레나별 배율: 상대 혼합에서 self-play 아레나는 0 (ASH_Arena::OutcomeRewardScale 주석).
 		if (Arena->IsRoundOver())
 		{
-			Reward += OutcomeReward * RampScale * Arena->GetRoundOutcome(Team);
+			Reward += OutcomeReward * RampScale * Arena->OutcomeRewardScale * Arena->GetRoundOutcome(Team);
 		}
 		else
 		{
-			Reward -= GetRoundClockCost();
+			Reward -= GetRoundClockCost() * Arena->OutcomeRewardScale;
 		}
 	}
 
@@ -263,5 +264,14 @@ void USH_ShooterTrainingEnv::ResetAgentEpisode_Implementation(const int32 AgentI
 	}
 	GymsResetThisFrame.Add(Gym);
 
-	Gym->Reset();
+	// ★ 우리 아레나는 자체 리셋을 쓴다. Gym->Reset() 은 엔진의 엔티티 매니저가 여분 유닛을 만든다
+	//   (ASH_Arena::ResetRound 주석).
+	if (ASH_Arena* Arena = Cast<ASH_Arena>(Gym))
+	{
+		Arena->ResetRound();
+	}
+	else
+	{
+		Gym->Reset();
+	}
 }

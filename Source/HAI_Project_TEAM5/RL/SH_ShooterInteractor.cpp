@@ -22,10 +22,18 @@ namespace
 	const FName Tag_Ray        (TEXT("Ray"));
 	const FName Tag_RayDepth   (TEXT("RayDepth"));
 	const FName Tag_RayHostile (TEXT("RayHostile"));
-	const FName Tag_Enemy      (TEXT("Enemy"));
+	const FName Tag_RayAlly    (TEXT("RayAlly"));
+	const FName Tag_Enemies    (TEXT("Enemies"));
 	const FName Tag_EnemyBody  (TEXT("EnemyBody"));
 	const FName Tag_EnemyAngle (TEXT("EnemyAngle"));
 	const FName Tag_EnemyDepth (TEXT("EnemyDepth"));
+	const FName Tag_EnemyHP    (TEXT("EnemyHP"));
+	const FName Tag_EnemyFacing(TEXT("EnemyFacing"));
+	const FName Tag_Allies     (TEXT("Allies"));
+	const FName Tag_AllyBody   (TEXT("AllyBody"));
+	const FName Tag_AllyAngle  (TEXT("AllyAngle"));
+	const FName Tag_AllyDistance(TEXT("AllyDistance"));
+	const FName Tag_AllyHP     (TEXT("AllyHP"));
 	const FName Tag_Memory     (TEXT("Memory"));
 	const FName Tag_Hit        (TEXT("Hit"));
 	const FName Tag_TimeSinceHit(TEXT("TimeSinceHit"));
@@ -55,6 +63,12 @@ namespace
 		-FVector::ForwardVector,
 		-FVector::RightVector,
 		FVector::RightVector
+	};
+
+	/** 회전 인덱스 → MaxTurnRateDeg 배율. 180 기준 −180, −45, −10, 0, +10, +45, +180 °/s.
+	 *  ★ 대칭이고 중앙이 0 이어야 한다(SHRL::TurnBins 주석). */
+	const float TurnRateFractions[SHRL::TurnBins] = {
+		-1.0f, -0.25f, -10.0f / 180.0f, 0.0f, 10.0f / 180.0f, 0.25f, 1.0f
 	};
 }
 
@@ -110,6 +124,7 @@ void USH_ShooterInteractor::SpecifyAgentObservation_Implementation(
 	TMap<FName, FLearningAgentsObservationSchemaElement> Ray;
 	Ray.Add(Tag_RayDepth,   O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_RayDepth));
 	Ray.Add(Tag_RayHostile, O::SpecifyBoolObservation (InObservationSchema,     true, Tag_RayHostile));
+	Ray.Add(Tag_RayAlly,    O::SpecifyBoolObservation (InObservationSchema,     true, Tag_RayAlly));
 
 	const FLearningAgentsObservationSchemaElement RaySchema =
 		O::SpecifyStructObservation(InObservationSchema, Ray, true, Tag_Ray);
@@ -118,18 +133,31 @@ void USH_ShooterInteractor::SpecifyAgentObservation_Implementation(
 	const FLearningAgentsObservationSchemaElement Fan =
 		O::SpecifyStaticArrayObservation(InObservationSchema, RaySchema, SHRL::RayCount, true, Tag_Fan);
 
-	// --- 적: 보일 때만 존재하는 관측 ----------------------------------------
-	// Optional 은 내부적으로 ExclusiveUnion{Null, Valid} + Encoding 이다
-	// (LearningAgentsObservations.cpp:1342). JSON 타입 OrExclusive 로 내려가고
-	// 파이썬이 처리한다.
+	// --- 보이는 적: 집합 (0 ~ MaxEnemies 개) -----------------------------------
+	// Set 은 원소마다 같은 인코더를 거친 뒤 어텐션으로 합친다. 순서와 개수에 무관하다.
 	TMap<FName, FLearningAgentsObservationSchemaElement> Enemy;
-	Enemy.Add(Tag_EnemyAngle, O::SpecifyAngleObservation(InObservationSchema,     true, Tag_EnemyAngle));
-	Enemy.Add(Tag_EnemyDepth, O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_EnemyDepth));
+	Enemy.Add(Tag_EnemyAngle,  O::SpecifyAngleObservation(InObservationSchema,     true, Tag_EnemyAngle));
+	Enemy.Add(Tag_EnemyDepth,  O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_EnemyDepth));
+	Enemy.Add(Tag_EnemyHP,     O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_EnemyHP));
+	Enemy.Add(Tag_EnemyFacing, O::SpecifyAngleObservation(InObservationSchema,     true, Tag_EnemyFacing));
 
-	const FLearningAgentsObservationSchemaElement EnemyOptional =
-		O::SpecifyOptionalObservation(InObservationSchema,
+	const FLearningAgentsObservationSchemaElement Enemies =
+		O::SpecifySetObservation(InObservationSchema,
 			O::SpecifyStructObservation(InObservationSchema, Enemy, true, Tag_EnemyBody),
-			EnemyEncodingSize, true, Tag_Enemy);
+			SHRL::MaxEnemies, SetAttentionEncodingSize, SetAttentionHeadNum, SetValueEncodingSize,
+			true, Tag_Enemies);
+
+	// --- 아군: 집합 (시야와 무관 — 팀 정보) ------------------------------------
+	TMap<FName, FLearningAgentsObservationSchemaElement> Ally;
+	Ally.Add(Tag_AllyAngle,    O::SpecifyAngleObservation(InObservationSchema,     true, Tag_AllyAngle));
+	Ally.Add(Tag_AllyDistance, O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_AllyDistance));
+	Ally.Add(Tag_AllyHP,       O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_AllyHP));
+
+	const FLearningAgentsObservationSchemaElement Allies =
+		O::SpecifySetObservation(InObservationSchema,
+			O::SpecifyStructObservation(InObservationSchema, Ally, true, Tag_AllyBody),
+			SHRL::MaxAllies, SetAttentionEncodingSize, SetAttentionHeadNum, SetValueEncodingSize,
+			true, Tag_Allies);
 
 	// --- 기억: 안 보일 때 쓰는 것 --------------------------------------------
 	// TimeSince 를 0~1 로 떨어뜨린다. Scale 이 Vision 의 MemoryHorizonSeconds 와 같아야 한다.
@@ -165,8 +193,9 @@ void USH_ShooterInteractor::SpecifyAgentObservation_Implementation(
 	Team.Add(Tag_ZoneMargin,    O::SpecifyFloatObservation(InObservationSchema, {}, true, Tag_ZoneMargin));
 
 	TMap<FName, FLearningAgentsObservationSchemaElement> Root;
-	Root.Add(Tag_Fan,    Fan);
-	Root.Add(Tag_Enemy,  EnemyOptional);
+	Root.Add(Tag_Fan,     Fan);
+	Root.Add(Tag_Enemies, Enemies);
+	Root.Add(Tag_Allies,  Allies);
 	Root.Add(Tag_Memory, O::SpecifyStructObservation(InObservationSchema, Memory, true, Tag_Memory));
 	Root.Add(Tag_Hit,    O::SpecifyStructObservation(InObservationSchema, Hit,    true, Tag_Hit));
 	Root.Add(Tag_Team,   O::SpecifyStructObservation(InObservationSchema, Team,   true, Tag_Team));
@@ -208,34 +237,83 @@ void USH_ShooterInteractor::GatherAgentObservation_Implementation(
 	{
 		// 죽었으면 "아무것도 없는 시야" — Depth 1(끝까지 트임), 적대 없음.
 		const bool  bHostile = (Rays && Rays->IsValidIndex(Index)) ? (*Rays)[Index].bHostile : false;
+		const bool  bAlly    = (Rays && Rays->IsValidIndex(Index)) ? (*Rays)[Index].bAlly    : false;
 		const float Depth01  = (Rays && Rays->IsValidIndex(Index)) ? (*Rays)[Index].Depth01  : 1.0f;
 
 		TMap<FName, FLearningAgentsObservationObjectElement> Ray;
 		Ray.Add(Tag_RayDepth,   O::MakeFloatObservation(InObservationObject, SanitizeObservation(Depth01, TEXT("RayDepth"), AgentId), true, Tag_RayDepth));
 		Ray.Add(Tag_RayHostile, O::MakeBoolObservation (InObservationObject, bHostile, true, Tag_RayHostile));
+		Ray.Add(Tag_RayAlly,    O::MakeBoolObservation (InObservationObject, bAlly,    true, Tag_RayAlly));
 		RayElements.Add(O::MakeStructObservation(InObservationObject, Ray, true, Tag_Ray));
 	}
 
 	const FLearningAgentsObservationObjectElement Fan =
 		O::MakeStaticArrayObservation(InObservationObject, RayElements, true, Tag_Fan);
 
-	// --- 적: 보일 때만 Valid -------------------------------------------------
-	const bool bEnemyVisible = bLive && Vision->IsHostileVisible();
-
-	TMap<FName, FLearningAgentsObservationObjectElement> Enemy;
+	// --- 보이는 적: 가까운 순, 최대 MaxEnemies --------------------------------
 	// ★ MakeAngleObservation 은 **도(degree)** 를 받는다. 라디안 버전은
-	//   MakeAngleObservationRadians 로 따로 있다 (LearningAgentsObservations.h:1727 / 1751).
-	Enemy.Add(Tag_EnemyAngle, O::MakeAngleObservation(InObservationObject,
-		SanitizeObservation(bEnemyVisible ? Vision->GetHostileAngleDeg() : 0.0f, TEXT("EnemyAngle"), AgentId), 0.0f, true, Tag_EnemyAngle));
-	Enemy.Add(Tag_EnemyDepth, O::MakeFloatObservation(InObservationObject,
-		SanitizeObservation(bEnemyVisible ? Vision->GetHostileDepth01() : 1.0f, TEXT("EnemyDepth"), AgentId), true, Tag_EnemyDepth));
+	//   MakeAngleObservationRadians 로 따로 있다 (LearningAgentsObservations.h).
+	// 죽었으면 빈 집합 = "아무도 안 보인다".
+	TArray<FLearningAgentsObservationObjectElement> EnemyElements;
+	if (bLive)
+	{
+		for (const FSHVisibleEnemy& Seen : Vision->GetVisibleEnemies())
+		{
+			if (EnemyElements.Num() >= SHRL::MaxEnemies)
+			{
+				break;
+			}
+			TMap<FName, FLearningAgentsObservationObjectElement> Enemy;
+			Enemy.Add(Tag_EnemyAngle,  O::MakeAngleObservation(InObservationObject,
+				SanitizeObservation(Seen.AngleDeg, TEXT("EnemyAngle"), AgentId), 0.0f, true, Tag_EnemyAngle));
+			Enemy.Add(Tag_EnemyDepth,  O::MakeFloatObservation(InObservationObject,
+				SanitizeObservation(Seen.Depth01, TEXT("EnemyDepth"), AgentId), true, Tag_EnemyDepth));
+			Enemy.Add(Tag_EnemyHP,     O::MakeFloatObservation(InObservationObject,
+				SanitizeObservation(Seen.HPRatio, TEXT("EnemyHP"), AgentId), true, Tag_EnemyHP));
+			Enemy.Add(Tag_EnemyFacing, O::MakeAngleObservation(InObservationObject,
+				SanitizeObservation(Seen.FacingDeg, TEXT("EnemyFacing"), AgentId), 0.0f, true, Tag_EnemyFacing));
+			EnemyElements.Add(O::MakeStructObservation(InObservationObject, Enemy, true, Tag_EnemyBody));
+		}
+	}
+	const FLearningAgentsObservationObjectElement Enemies =
+		O::MakeSetObservationFromArray(InObservationObject, EnemyElements, true, Tag_Enemies);
 
-	const FLearningAgentsObservationObjectElement EnemyOptional =
-		O::MakeOptionalObservation(InObservationObject,
-			O::MakeStructObservation(InObservationObject, Enemy, true, Tag_EnemyBody),
-			bEnemyVisible ? ELearningAgentsOptionalObservation::Valid
-			              : ELearningAgentsOptionalObservation::Null,
-			true, Tag_Enemy);
+	// --- 아군: 살아 있는 아군 전원 (시야와 무관) -------------------------------
+	// 각도는 내 조준선 기준, 거리는 시야 사거리로 나눈다. 죽었으면 빈 집합.
+	const ASH_Arena* Arena = (Unit && Stats) ? Cast<ASH_Arena>(Unit->CachedGym.Get()) : nullptr;
+	TArray<FLearningAgentsObservationObjectElement> AllyElements;
+	if (bLive && Arena)
+	{
+		FVector Eye;
+		FRotator Aim;
+		Vision->GetEyeAndAim(Eye, Aim);
+		const float Range = FMath::Max(Vision->MaxRange, 1.0f);
+		const FVector MyLocation = Unit->GetActorLocation();
+
+		for (const TWeakObjectPtr<ABase_Character>& Weak : Arena->GetTeamUnits(static_cast<int32>(Stats->TeamId)))
+		{
+			const ABase_Character* Ally = Weak.Get();
+			if (!Ally || Ally == Unit || !Ally->bEntityEnabled || !Ally->CombatStats || !Ally->CombatStats->IsAlive())
+			{
+				continue;
+			}
+			if (AllyElements.Num() >= SHRL::MaxAllies)
+			{
+				break;
+			}
+			const FVector ToAlly = Ally->GetActorLocation() - MyLocation;
+			TMap<FName, FLearningAgentsObservationObjectElement> AllyObs;
+			AllyObs.Add(Tag_AllyAngle,    O::MakeAngleObservation(InObservationObject,
+				SanitizeObservation(FMath::FindDeltaAngleDegrees(Aim.Yaw, ToAlly.Rotation().Yaw), TEXT("AllyAngle"), AgentId), 0.0f, true, Tag_AllyAngle));
+			AllyObs.Add(Tag_AllyDistance, O::MakeFloatObservation(InObservationObject,
+				SanitizeObservation(FMath::Min(ToAlly.Size2D() / Range, 1.0f), TEXT("AllyDistance"), AgentId), true, Tag_AllyDistance));
+			AllyObs.Add(Tag_AllyHP,       O::MakeFloatObservation(InObservationObject,
+				SanitizeObservation(Ally->CombatStats->GetHPRatio(), TEXT("AllyHP"), AgentId), true, Tag_AllyHP));
+			AllyElements.Add(O::MakeStructObservation(InObservationObject, AllyObs, true, Tag_AllyBody));
+		}
+	}
+	const FLearningAgentsObservationObjectElement Allies =
+		O::MakeSetObservationFromArray(InObservationObject, AllyElements, true, Tag_Allies);
 
 	// --- 기억 ---------------------------------------------------------------
 	TMap<FName, FLearningAgentsObservationObjectElement> Memory;
@@ -267,7 +345,7 @@ void USH_ShooterInteractor::GatherAgentObservation_Implementation(
 	float RoundProgress = 0.0f;
 	float ZoneRadius01 = 1.0f;
 	float ZoneMargin = 0.0f;
-	if (const ASH_Arena* Arena = (Unit && Stats) ? Cast<ASH_Arena>(Unit->CachedGym.Get()) : nullptr)
+	if (Arena)
 	{
 		const int32 MyTeam = static_cast<int32>(Stats->TeamId);
 		const int32 OtherTeam = 1 - MyTeam;
@@ -294,8 +372,9 @@ void USH_ShooterInteractor::GatherAgentObservation_Implementation(
 	Team.Add(Tag_ZoneMargin,    O::MakeFloatObservation(InObservationObject, SanitizeObservation(ZoneMargin,    TEXT("ZoneMargin"),    AgentId), true, Tag_ZoneMargin));
 
 	TMap<FName, FLearningAgentsObservationObjectElement> Root;
-	Root.Add(Tag_Fan,    Fan);
-	Root.Add(Tag_Enemy,  EnemyOptional);
+	Root.Add(Tag_Fan,     Fan);
+	Root.Add(Tag_Enemies, Enemies);
+	Root.Add(Tag_Allies,  Allies);
 	Root.Add(Tag_Memory, O::MakeStructObservation(InObservationObject, Memory, true, Tag_Memory));
 	Root.Add(Tag_Hit,    O::MakeStructObservation(InObservationObject, Hit,    true, Tag_Hit));
 	Root.Add(Tag_Team,   O::MakeStructObservation(InObservationObject, Team,   true, Tag_Team));
@@ -403,9 +482,7 @@ void USH_ShooterInteractor::PerformAgentAction_Implementation(
 	// --- 조준: 각속도만 적어 둔다. 실제 적용은 폰의 Tick 이다 -------------------
 	// ★ 여기서 직접 SetControlRotation 하면 20Hz 로만 돌아 프레임률에 따라 실효
 	//   각속도가 달라진다. ASH_RLCharacter::Tick 이 DeltaTime 을 곱해 매 프레임 적용한다.
-	const float Half = 0.5f * static_cast<float>(SHRL::TurnBins - 1);         // 5 → 2.0
-	const float TurnScale = (static_cast<float>(TurnIndex) - Half) / Half;    // -1 … +1
-	Unit->PendingTurnRateDeg = TurnScale * Unit->MaxTurnRateDeg;
+	Unit->PendingTurnRateDeg = TurnRateFractions[FMath::Clamp(TurnIndex, 0, SHRL::TurnBins - 1)] * Unit->MaxTurnRateDeg;
 
 	// --- 이동: 조준선 기준 상대 방향 -------------------------------------------
 	const FVector& LocalDirection = MoveDirections[FMath::Clamp(MoveIndex, 0, SHRL::MoveBins - 1)];

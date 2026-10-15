@@ -112,6 +112,11 @@ void ABase_Character::EnableEntity_Implementation()
 	bEntityEnabled = true;
 
 	SetActorHiddenInGame(false);
+	// 총은 별도 액터라 폰의 SetActorHiddenInGame 이 전파되지 않는다. 같이 켠다.
+	if (gun)
+	{
+		gun->SetActorHiddenInGame(false);
+	}
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	SetActorTickEnabled(true);
 	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
@@ -134,6 +139,11 @@ void ABase_Character::DisableEntity_Implementation()
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	SetActorHiddenInGame(true);
 	SetActorTickEnabled(false);
+	// ★ 총은 별도 액터라 숨김이 전파되지 않는다 — 안 숨기면 빈 자리에 총만 떠 있다.
+	if (gun)
+	{
+		gun->SetActorHiddenInGame(true);
+	}
 
 	if (AController* C = GetController())
 	{

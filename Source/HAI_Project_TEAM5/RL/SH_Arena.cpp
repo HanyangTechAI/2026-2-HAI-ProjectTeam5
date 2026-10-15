@@ -12,6 +12,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/Controller.h"
 #include "LearningAgentsEntitiesManagerComponent.h"
+#include "LearningAgentsEntityInterface.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace SHArena
@@ -288,6 +289,24 @@ void ASH_Arena::HandlePostGymReset()
 	BeginRound();
 }
 
+void ASH_Arena::ResetRound()
+{
+	// 팀별 풀 = 초기화 때 엔진이 만든 유닛(ApplySpawnSlots 가 캐시). 엔진의 엔티티 매니저 리셋을
+	// 거치지 않으므로 여분 액터가 생기지 않는다 — 헤더 주석 참조.
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		for (const TWeakObjectPtr<ABase_Character>& Weak : TeamUnits[Team])
+		{
+			if (ABase_Character* Unit = Weak.Get())
+			{
+				ILearningAgentsEntityInterface::Execute_ResetEntity(Unit, this);
+				ILearningAgentsEntityInterface::Execute_EnableEntity(Unit);
+			}
+		}
+	}
+	HandlePostGymReset();
+}
+
 //~ 라운드 -------------------------------------------------------------------
 
 bool ASH_Arena::IsUnitAlive(const ABase_Character* Unit)
@@ -299,6 +318,7 @@ void ASH_Arena::BeginRound()
 {
 	const UWorld* World = GetWorld();
 	RoundStartTime = World ? World->GetTimeSeconds() : 0.0f;
+	++RoundIndex;
 	RoundEnd = ESHRoundEnd::None;
 	FirstDamageTime = -1.0f;
 	ZoneDamageTimer = 0.0f;
@@ -524,6 +544,13 @@ void ASH_Arena::CollectUnits(int32 Team, TArray<ABase_Character*>& OutUnits) con
 	{
 		ABase_Character* Unit = *It;
 		if (!Unit || !IsMemberOfGym(Unit))
+		{
+			continue;
+		}
+
+		// ★ 비활성 유닛은 팀이 아니다. 엔진의 엔티티 매니저가 만든 여분 유닛(ResetRound 주석)이
+		//   비활성으로 남아 있으면 팀 인원과 스폰 슬롯 수가 틀어진다.
+		if (!Unit->bEntityEnabled)
 		{
 			continue;
 		}
