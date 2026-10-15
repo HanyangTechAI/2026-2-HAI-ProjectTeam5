@@ -71,6 +71,19 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SH|Throughput", meta = (ClampMin = "1"))
 	int32 StepsPerIteration = 16384;
 
+	//~ 전투 계측 --------------------------------------------------------------
+
+	/**
+	 *  전투 요약을 함께 찍는다 — 누적 사격/명중률, 표적을 보유한 봇 비율.
+	 *
+	 *  ★ "표적 보유 봇 비율" 이 시야 제한의 효과를 직접 재는 수치다.
+	 *  전지적이면 살아 있는 봇은 거의 전부 표적을 들고 있다(100%에 가깝다).
+	 *  시야각을 좁히고 엄폐물을 넣으면 이 비율이 내려간다. 내려가지 않으면
+	 *  시야 게이트가 실제로는 걸리지 않고 있다는 뜻이다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|Combat")
+	bool bReportCombat = true;
+
 	virtual void Tick(float DeltaSeconds) override;
 
 protected:
@@ -81,6 +94,16 @@ protected:
 
 	void ApplyTrainingRenderSettings();
 	void ReportThroughput(double RealElapsed, float SimElapsed, int32 Frames) const;
+
+	/** 누적 사격/명중과 표적 보유 비율. 학습 없이 센서를 검증할 때의 주 지표다. */
+	void ReportCombat() const;
+
+	/**
+	 *  표적이 없는 봇들이 **왜** 없는지 원인별로 집계한다.
+	 *  시야각 밖 / 가려짐 / 사거리 밖은 대응이 완전히 다르다 —
+	 *  가려짐이면 무엇이 가렸는지까지 찍는다 (엄폐물 vs 아군).
+	 */
+	void ReportVisionFailures() const;
 
 private:
 	double LastReportRealTime = 0.0;

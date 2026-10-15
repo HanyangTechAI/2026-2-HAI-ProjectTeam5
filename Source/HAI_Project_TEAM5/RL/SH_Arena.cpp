@@ -6,11 +6,13 @@
 #include "Combat/CombatStatsComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Controller.h"
 #include "LearningAgentsEntitiesManagerComponent.h"
+#include "LearningAgentsEntityInterface.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace SHArena
@@ -26,8 +28,9 @@ namespace SHArena
 
 ASH_Arena::ASH_Arena()
 {
-	PrimaryActorTick.bCanEverTick = false;
-	PrimaryActorTick.bStartWithTickEnabled = false;
+	// 라운드 판정과 축소 구역 때문에 틱이 필요하다. 아레나 16개 x 유닛 20 이라 비용은 작다.
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = true;
 
 	// 베이스 생성자가 RootComponent 와 SimpleGymFloor 를 이미 만들었다.
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> PlaneMesh(SHArena::PlaneMeshPath);
@@ -68,11 +71,30 @@ ASH_Arena::ASH_Arena()
 void ASH_Arena::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+
 	RebuildArenaGeometry();
+	// ★ 반드시 분리해서 부른다. 경계 생성을 꺼도 유닛 풀은 채워져야 한다.
+	RebuildEntityPool();
 }
 
 void ASH_Arena::RebuildArenaGeometry()
 {
+	// --- 수작업 형상 모드 ---------------------------------------------------
+	// C++ 벽은 BP 에서 삭제할 수 없으므로(Inherited) 숨기고 콜리전만 끈다.
+	// 바닥(SimpleGymFloor)은 건드리지 않는다 — BP 에서 크기를 직접 정하게 둔다.
+	if (!bAutoBuildBoundary)
+	{
+		for (UStaticMeshComponent* Wall : Walls)
+		{
+			if (Wall)
+			{
+				Wall->SetVisibility(false);
+				Wall->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			}
+		}
+		return;
+	}
+
 	// --- 바닥 ---------------------------------------------------------------
 	// GymsManager 는 첫 번째 Gym 의 GetGymExtents() 로 16개 전부의 격자 위치를 정한다.
 	// GetGymExtents 는 SimpleGymFloor 의 로컬 바운드 x 컴포넌트 스케일이므로,
@@ -112,32 +134,61 @@ void ASH_Arena::RebuildArenaGeometry()
 			0.5f * WallHeight));
 		Wall->SetRelativeRotation(FRotator(0.0f, AngleDeg + 90.0f, 0.0f));
 		Wall->SetRelativeScale3D(WallScale);
-	}
 
-	// --- 유닛 풀 ------------------------------------------------------------
-	if (EntitiesManager)
+		// bAutoBuildBoundary 를 껐다 켰을 때 되살린다.
+		Wall->SetVisibility(true);
+		Wall->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+}
+
+void ASH_Arena::RebuildEntityPool()
+{
+	if (!EntitiesManager)
 	{
-		EntitiesManager->Entities.Reset();
-
-		// 두 클래스가 모두 지정되기 전에는 비워 둔다 — 그렇지 않으면
-		// CheckEntityClasses() 가 매 프레임 Error 를 찍는다.
-		if (Team0UnitClass && Team1UnitClass)
-		{
-			auto MakeInfo = [this](const TSubclassOf<AActor>& UnitClass)
-			{
-				FLearningAgentsEntityInfo Info;
-				Info.EntityClass = UnitClass;
-				Info.EntitySpawnZOffset = SpawnZOffset;
-				// Min == Max. 이유는 UnitsPerTeam 주석 참조.
-				Info.EpisodeEntitySpawnCountMin = UnitsPerTeam;
-				Info.EpisodeEntitySpawnCountMax = UnitsPerTeam;
-				return Info;
-			};
-
-			EntitiesManager->Entities.Add(MakeInfo(Team0UnitClass));
-			EntitiesManager->Entities.Add(MakeInfo(Team1UnitClass));
-		}
+		return;
 	}
+
+	EntitiesManager->Entities.Reset();
+
+	// 두 클래스가 모두 지정되기 전에는 비워 둔다 — 그렇지 않으면
+	// CheckEntityClasses() 가 매 프레임 Error 를 찍는다.
+	if (!Team0UnitClass || !Team1UnitClass)
+	{
+		return;
+	}
+
+	auto MakeInfo = [this](const TSubclassOf<AActor>& UnitClass)
+	{
+		FLearningAgentsEntityInfo Info;
+		Info.EntityClass = UnitClass;
+		Info.EntitySpawnZOffset = SpawnZOffset;
+		// Min == Max. 이유는 UnitsPerTeam 주석 참조.
+		Info.EpisodeEntitySpawnCountMin = UnitsPerTeam;
+		Info.EpisodeEntitySpawnCountMax = UnitsPerTeam;
+		return Info;
+	};
+
+	EntitiesManager->Entities.Add(MakeInfo(Team0UnitClass));
+	EntitiesManager->Entities.Add(MakeInfo(Team1UnitClass));
+}
+
+void ASH_Arena::GetGymExtents(FVector& OutMinExtents, FVector& OutMaxExtents) const
+{
+	// 콜리전이 있는 컴포넌트 전체(바닥 + 벽 + 엄폐물)를 감싸는 로컬 박스.
+	//
+	// ★ bNonColliding=false 인 이유: 여기서 필요한 것은 "물리적으로 차지하는 범위" 다.
+	//   피치를 정하는 목적이 총알 누출과 아레나 겹침을 막는 것이므로, 콜리전 없는
+	//   장식 메시는 포함시키지 않는다. 에디터 전용 빌보드가 섞여 들어오는 것도 막는다.
+	const FBox Box = CalculateComponentsBoundingBoxInLocalSpace(/*bNonColliding=*/false);
+	if (Box.IsValid)
+	{
+		OutMinExtents = Box.Min;
+		OutMaxExtents = Box.Max;
+		return;
+	}
+
+	// 폴백: 바닥 하나만 본다 (부모 구현).
+	Super::GetGymExtents(OutMinExtents, OutMaxExtents);
 }
 
 void ASH_Arena::BeginPlay()
@@ -165,9 +216,62 @@ void ASH_Arena::BeginPlay()
 	OnGymInitialized.AddDynamic(this, &ASH_Arena::HandleGymInitialized);
 	OnPostGymReset.AddDynamic(this, &ASH_Arena::HandlePostGymReset);
 
+	// 엄폐물이 스폰 자리를 먹었는지 확인한다. 유닛이 아직 스폰되기 전이라
+	// 유닛끼리의 겹침은 잡히지 않고 순수하게 배치 실수만 잡힌다.
+	ValidateSpawnSlotsClear();
+
 	if (bDrawDebugOnBeginPlay)
 	{
 		DrawDebugArena(60.0f);
+	}
+}
+
+void ASH_Arena::ValidateSpawnSlotsClear() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// ABase_Character 의 기본 캡슐 치수. BP 에서 바꿨다면 여기도 맞춰야 한다.
+	const FCollisionShape Capsule = FCollisionShape::MakeCapsule(42.0f, 96.0f);
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(SHSpawnSlotCheck), /*bTraceComplex=*/false);
+	// ★ AddIgnoredActor(this) 를 쓰면 안 된다 — 엄폐물이 이 액터의 컴포넌트이므로
+	//   검사 대상 자체가 사라진다. 바닥만 콕 집어 무시한다.
+	// TObjectPtr 를 그대로 넘기면 raw-pointer / TWeakObjectPtr 오버로드가 모호해진다(C2668).
+	if (const UPrimitiveComponent* FloorComponent = SimpleGymFloor)
+	{
+		Params.AddIgnoredComponent(FloorComponent);
+	}
+
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		TArray<FTransform> Slots;
+		GetSpawnTransforms(Team, UnitsPerTeam, Slots);
+
+		for (int32 Index = 0; Index < Slots.Num(); ++Index)
+		{
+			const FVector Location = Slots[Index].GetLocation();
+
+			TArray<FOverlapResult> Overlaps;
+			if (!World->OverlapMultiByChannel(Overlaps, Location, FQuat::Identity,
+					ECC_Pawn, Capsule, Params))
+			{
+				continue;
+			}
+
+			for (const FOverlapResult& Overlap : Overlaps)
+			{
+				const UPrimitiveComponent* Comp = Overlap.GetComponent();
+				UE_LOG(LogTemp, Error,
+					TEXT("[SH_Arena] %s: 팀%d 슬롯 %d (%s) 가 %s 에 막혀 있다. ")
+					TEXT("BP_SHArena 에서 엄폐물을 옮기거나 SpawnRadius(%.0f) 를 조정할 것."),
+					*GetName(), Team, Index, *Location.ToCompactString(),
+					Comp ? *Comp->GetName() : TEXT("(알 수 없음)"), SpawnRadius);
+			}
+		}
 	}
 }
 
@@ -176,11 +280,254 @@ void ASH_Arena::HandleGymInitialized()
 	// 초기화 때 한 번만 검사한다 — 매 리셋마다 찍으면 로그가 도배된다.
 	ValidateTeamAuthoring();
 	ApplySpawnSlots();
+	BeginRound();
 }
 
 void ASH_Arena::HandlePostGymReset()
 {
 	ApplySpawnSlots();
+	BeginRound();
+}
+
+void ASH_Arena::ResetRound()
+{
+	// 팀별 풀 = 초기화 때 엔진이 만든 유닛(ApplySpawnSlots 가 캐시). 엔진의 엔티티 매니저 리셋을
+	// 거치지 않으므로 여분 액터가 생기지 않는다 — 헤더 주석 참조.
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		for (const TWeakObjectPtr<ABase_Character>& Weak : TeamUnits[Team])
+		{
+			if (ABase_Character* Unit = Weak.Get())
+			{
+				ILearningAgentsEntityInterface::Execute_ResetEntity(Unit, this);
+				ILearningAgentsEntityInterface::Execute_EnableEntity(Unit);
+			}
+		}
+	}
+	HandlePostGymReset();
+}
+
+//~ 라운드 -------------------------------------------------------------------
+
+bool ASH_Arena::IsUnitAlive(const ABase_Character* Unit)
+{
+	return Unit && Unit->bEntityEnabled && Unit->CombatStats && Unit->CombatStats->IsAlive();
+}
+
+void ASH_Arena::BeginRound()
+{
+	const UWorld* World = GetWorld();
+	RoundStartTime = World ? World->GetTimeSeconds() : 0.0f;
+	++RoundIndex;
+	RoundEnd = ESHRoundEnd::None;
+	FirstDamageTime = -1.0f;
+	ZoneDamageTimer = 0.0f;
+}
+
+void ASH_Arena::EndRound(ESHRoundEnd End)
+{
+	RoundEnd = End;
+
+	FSHRoundRecord Record;
+	Record.End = End;
+	Record.Duration = GetRoundElapsed();
+	Record.FirstDamageTime = FirstDamageTime;
+
+	// 리포트가 돌지 않는 환경(에디터 미리보기 등)에서 무한히 쌓이지 않게.
+	if (PendingRoundRecords.Num() < 4096)
+	{
+		PendingRoundRecords.Add(Record);
+	}
+}
+
+float ASH_Arena::GetRoundElapsed() const
+{
+	const UWorld* World = GetWorld();
+	return World ? FMath::Max(0.0f, World->GetTimeSeconds() - RoundStartTime) : 0.0f;
+}
+
+float ASH_Arena::GetZoneRadius() const
+{
+	if (!bShrinkZone)
+	{
+		return ArenaRadius;
+	}
+
+	const float Elapsed = GetRoundElapsed();
+	if (Elapsed <= ZoneStartSeconds)
+	{
+		return ArenaRadius;
+	}
+
+	const float Alpha = FMath::Clamp(
+		(Elapsed - ZoneStartSeconds) / FMath::Max(ZoneShrinkSeconds, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+	return FMath::Lerp(ArenaRadius, FMath::Min(ZoneFinalRadius, ArenaRadius), Alpha);
+}
+
+float ASH_Arena::GetRoundOutcome(int32 Team) const
+{
+	switch (RoundEnd)
+	{
+	case ESHRoundEnd::Team0Wins:
+		return (Team == 0) ? 1.0f : -1.0f;
+	case ESHRoundEnd::Team1Wins:
+		return (Team == 1) ? 1.0f : -1.0f;
+	case ESHRoundEnd::Timeout:
+	case ESHRoundEnd::MutualWipe:
+		// ★ 승자 없음. TFT 와 같이 양쪽 모두 패배로 본다 — 대치를 균형점에서 빼내는 규칙이다.
+		return bTimeoutIsLossForBoth ? -1.0f : 0.0f;
+	default:
+		return 0.0f;
+	}
+}
+
+int32 ASH_Arena::GetAliveCount(int32 Team) const
+{
+	return (Team == 0 || Team == 1) ? AliveCount[Team] : 0;
+}
+
+int32 ASH_Arena::GetTeamSize(int32 Team) const
+{
+	return (Team == 0 || Team == 1) ? TeamUnits[Team].Num() : 0;
+}
+
+const TArray<TWeakObjectPtr<ABase_Character>>& ASH_Arena::GetTeamUnits(int32 Team) const
+{
+	static const TArray<TWeakObjectPtr<ABase_Character>> Empty;
+	return (Team == 0 || Team == 1) ? TeamUnits[Team] : Empty;
+}
+
+void ASH_Arena::ConsumeRoundRecords(TArray<FSHRoundRecord>& OutRecords)
+{
+	OutRecords.Append(PendingRoundRecords);
+	PendingRoundRecords.Reset();
+}
+
+float ASH_Arena::ConsumeZoneDamage(int32 Team)
+{
+	if (Team != 0 && Team != 1)
+	{
+		return 0.0f;
+	}
+	const float Total = ZoneDamageTotal[Team];
+	ZoneDamageTotal[Team] = 0.0f;
+	return Total;
+}
+
+void ASH_Arena::ApplyZoneDamage(float DeltaSeconds)
+{
+	ZoneDamageTimer += DeltaSeconds;
+	if (ZoneDamageTimer < ZoneDamageInterval)
+	{
+		return;
+	}
+	const float Dt = ZoneDamageTimer;
+	ZoneDamageTimer = 0.0f;
+
+	const float Radius = GetZoneRadius();
+	if (Radius >= ArenaRadius)
+	{
+		return;   // 아직 줄지 않았다
+	}
+
+	const FVector Center = GetActorLocation();
+	const float RadiusSq = Radius * Radius;
+	const float Amount = ZoneDamagePerSecond * Dt;
+
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		for (const TWeakObjectPtr<ABase_Character>& Weak : TeamUnits[Team])
+		{
+			ABase_Character* Unit = Weak.Get();
+			if (!IsUnitAlive(Unit))
+			{
+				continue;
+			}
+			if (FVector::DistSquaredXY(Unit->GetActorLocation(), Center) <= RadiusSq)
+			{
+				continue;
+			}
+
+			// ★ 가해자 nullptr. 받은 피해로는 누산되지만(보상에 들어간다) 누구의 준 피해도
+			//   아니다. ASH_RLCharacter 의 피격 기억은 가해자가 없으면 지난 기억을 유지한다.
+			ZoneDamageTotal[Team] += Unit->CombatStats->ApplyDamage(Amount, nullptr);
+		}
+	}
+}
+
+void ASH_Arena::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	for (int32 Team = 0; Team < 2; ++Team)
+	{
+		int32 Alive = 0;
+		for (const TWeakObjectPtr<ABase_Character>& Weak : TeamUnits[Team])
+		{
+			Alive += IsUnitAlive(Weak.Get()) ? 1 : 0;
+		}
+		AliveCount[Team] = Alive;
+	}
+
+	// 끝난 라운드는 학습 환경이 아레나를 리셋할 때까지 그대로 둔다.
+	// ★ 여기서 스스로 리셋하면 안 된다. 리셋은 완료 신호(Termination)를 처리한 뒤
+	//   USH_ShooterTrainingEnv::ResetAgentEpisode 가 해야 결과 보상과 리셋 순서가 맞는다.
+	if (RoundEnd != ESHRoundEnd::None)
+	{
+		return;
+	}
+
+	// 유닛이 없는 아레나(레벨에 편집용으로 놓은 인스턴스 등)는 판정하지 않는다.
+	if (TeamUnits[0].Num() == 0 || TeamUnits[1].Num() == 0)
+	{
+		return;
+	}
+
+	const float Elapsed = GetRoundElapsed();
+
+	if (FirstDamageTime < 0.0f)
+	{
+		for (int32 Team = 0; Team < 2 && FirstDamageTime < 0.0f; ++Team)
+		{
+			for (const TWeakObjectPtr<ABase_Character>& Weak : TeamUnits[Team])
+			{
+				const ABase_Character* Unit = Weak.Get();
+				if (Unit && Unit->CombatStats && Unit->CombatStats->CurrentHP < Unit->CombatStats->MaxHP)
+				{
+					FirstDamageTime = Elapsed;
+					break;
+				}
+			}
+		}
+	}
+
+	const bool bWiped0 = AliveCount[0] == 0;
+	const bool bWiped1 = AliveCount[1] == 0;
+	if (bWiped0 && bWiped1)
+	{
+		EndRound(ESHRoundEnd::MutualWipe);
+		return;
+	}
+	if (bWiped1)
+	{
+		EndRound(ESHRoundEnd::Team0Wins);
+		return;
+	}
+	if (bWiped0)
+	{
+		EndRound(ESHRoundEnd::Team1Wins);
+		return;
+	}
+	if (Elapsed >= RoundTimeLimitSeconds)
+	{
+		EndRound(ESHRoundEnd::Timeout);
+		return;
+	}
+
+	if (bShrinkZone)
+	{
+		ApplyZoneDamage(DeltaSeconds);
+	}
 }
 
 void ASH_Arena::CollectUnits(int32 Team, TArray<ABase_Character*>& OutUnits) const
@@ -197,6 +544,13 @@ void ASH_Arena::CollectUnits(int32 Team, TArray<ABase_Character*>& OutUnits) con
 	{
 		ABase_Character* Unit = *It;
 		if (!Unit || !IsMemberOfGym(Unit))
+		{
+			continue;
+		}
+
+		// ★ 비활성 유닛은 팀이 아니다. 엔진의 엔티티 매니저가 만든 여분 유닛(ResetRound 주석)이
+		//   비활성으로 남아 있으면 팀 인원과 스폰 슬롯 수가 틀어진다.
+		if (!Unit->bEntityEnabled)
 		{
 			continue;
 		}
@@ -237,6 +591,14 @@ void ASH_Arena::ApplySpawnSlots()
 	{
 		TArray<ABase_Character*> Units;
 		CollectUnits(Team, Units);
+
+		// 라운드 판정과 관측이 매 프레임 쓰는 캐시. 여기서만 월드를 훑는다.
+		TeamUnits[Team].Reset(Units.Num());
+		for (ABase_Character* Unit : Units)
+		{
+			TeamUnits[Team].Add(Unit);
+		}
+
 		if (Units.Num() == 0)
 		{
 			continue;
