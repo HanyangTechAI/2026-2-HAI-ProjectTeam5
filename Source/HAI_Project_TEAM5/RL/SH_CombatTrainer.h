@@ -120,6 +120,15 @@ public:
 	bool bSelfPlay = false;
 
 	/**
+	 *  학습 중 라운드마다 두 팀의 진영을 맞바꾼다(ASH_Arena::bAlternateSides). -SHAlternateSides=0/1 로 바꾼다.
+	 *
+	 *  ★ 학습 모드에서만 켠다. 평가 모드는 명령줄로 지정하지 않으면 고정 진영이다 —
+	 *  2026-10-24 이전 평가 결과(전부 고정 진영)와 같은 조건으로 비교하기 위해서다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|Training")
+	bool bAlternateSides = true;
+
+	/**
 	 *  self-play 일 때 게더당 기록 스텝 수.
 	 *  ★ 16,384 는 에이전트 320 에서 시뮬레이션 2.6초 분량이라 갱신(약 5초) 시간이 지배한다.
 	 *  65,536 이면 약 10초 분량. 갱신 1회 비용은 미니배치 크기로 정해져 크게 늘지 않는다.
@@ -397,6 +406,7 @@ private:
 	int32 RoundRampOverride = -1;
 	int32 BufferOverride = -1;
 	int32 GradClipOverride = -1;
+	int32 AlternateSidesOverride = -1;
 
 	/** 구간 누적 사격/명중. Gun 이 기록하고 여기서 차분을 낸다. */
 	int64 ShotsFiredTotal = 0;

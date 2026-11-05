@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" font-family="Malgun Gothic, 'Apple SD Gothic Neo', sans-serif">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1d2633"/></marker></defs>
+<rect width="1600" height="900" fill="#ffffff"/>
+<text x="80" y="62" font-size="38" font-weight="700" fill="#1d2633">유닛이 보는 것과 하는 것</text>
+<text x="80" y="104" font-size="24" fill="#5f6b78">320개 유닛이 같은 신경망 하나를 공유한다 · 0.05초마다 관측 → 행동</text>
+<rect x="80" y="160" width="560" height="86" rx="12" fill="#eef7f1" stroke="#3a9d5d" stroke-width="2.5"/>
+<text x="104" y="196" font-size="24" font-weight="700" fill="#1d2633">시야 레이 16개</text>
+<text x="104" y="228" font-size="20" fill="#5f6b78">벽 · 엄폐물 · 적 · 아군까지 거리</text>
+<line x1="642" y1="203" x2="700" y2="369.2" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="80" y="258" width="560" height="86" rx="12" fill="#eef7f1" stroke="#3a9d5d" stroke-width="2.5"/>
+<text x="104" y="294" font-size="24" font-weight="700" fill="#1d2633">보이는 적 (최대 10)</text>
+<text x="104" y="326" font-size="20" fill="#5f6b78">방향 · 거리 · HP · 나를 보고 있는지</text>
+<line x1="642" y1="301" x2="700" y2="408.4" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="80" y="356" width="560" height="86" rx="12" fill="#eef7f1" stroke="#3a9d5d" stroke-width="2.5"/>
+<text x="104" y="392" font-size="24" font-weight="700" fill="#1d2633">아군 (최대 9)</text>
+<text x="104" y="424" font-size="20" fill="#5f6b78">방향 · 거리 · HP</text>
+<line x1="642" y1="399" x2="700" y2="447.6" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="80" y="454" width="560" height="86" rx="12" fill="#eef7f1" stroke="#3a9d5d" stroke-width="2.5"/>
+<text x="104" y="490" font-size="24" font-weight="700" fill="#1d2633">기억</text>
+<text x="104" y="522" font-size="20" fill="#5f6b78">마지막으로 적을 본 방향과 경과 시간</text>
+<line x1="642" y1="497" x2="700" y2="486.8" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="80" y="552" width="560" height="86" rx="12" fill="#eef7f1" stroke="#3a9d5d" stroke-width="2.5"/>
+<text x="104" y="588" font-size="24" font-weight="700" fill="#1d2633">피격 기억</text>
+<text x="104" y="620" font-size="20" fill="#5f6b78">마지막으로 맞은 방향과 경과 시간</text>
+<line x1="642" y1="595" x2="700" y2="526.0" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="80" y="650" width="560" height="86" rx="12" fill="#eef7f1" stroke="#3a9d5d" stroke-width="2.5"/>
+<text x="104" y="686" font-size="24" font-weight="700" fill="#1d2633">팀 · 라운드</text>
+<text x="104" y="718" font-size="20" fill="#5f6b78">양 팀 생존 비율 · 경과 · 안전 구역</text>
+<line x1="642" y1="693" x2="700" y2="565.2" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="80" y="748" width="560" height="86" rx="12" fill="#eef7f1" stroke="#3a9d5d" stroke-width="2.5"/>
+<text x="104" y="784" font-size="24" font-weight="700" fill="#1d2633">자신</text>
+<text x="104" y="816" font-size="20" fill="#5f6b78">HP · 지금 쏠 수 있는지</text>
+<line x1="642" y1="791" x2="700" y2="604.4" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="710" y="350" width="260" height="260" rx="20" fill="#f3eefa" stroke="#8e5bb5" stroke-width="3"/>
+<text x="840" y="455" font-size="28" font-weight="700" text-anchor="middle" fill="#1d2633">신경망</text>
+<text x="840" y="495" font-size="21" text-anchor="middle" fill="#5f6b78">(정책)</text>
+<text x="840" y="535" font-size="19" text-anchor="middle" fill="#5f6b78">입력 벡터 176</text>
+<line x1="972" y1="480" x2="1040" y2="305" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="1045" y="250" width="490" height="120" rx="12" fill="#fbf1e6" stroke="#d9822b" stroke-width="2.5"/>
+<text x="1070" y="290" font-size="25" font-weight="700" fill="#1d2633">회전 <tspan font-weight="400" fill="#5f6b78">· 7단계 각속도</tspan></text>
+<text x="1070" y="330" font-size="19" fill="#5f6b78">−180 · −45 · −10 · 0 · +10 · +45 · +180 °/s</text>
+<line x1="972" y1="480" x2="1040" y2="455" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="1045" y="400" width="490" height="120" rx="12" fill="#fbf1e6" stroke="#d9822b" stroke-width="2.5"/>
+<text x="1070" y="440" font-size="25" font-weight="700" fill="#1d2633">이동 <tspan font-weight="400" fill="#5f6b78">· 5가지</tspan></text>
+<text x="1070" y="480" font-size="19" fill="#5f6b78">정지 · 전진 · 후진 · 왼쪽 · 오른쪽 (조준선 기준)</text>
+<line x1="972" y1="480" x2="1040" y2="605" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="1045" y="550" width="490" height="120" rx="12" fill="#fbf1e6" stroke="#d9822b" stroke-width="2.5"/>
+<text x="1070" y="590" font-size="25" font-weight="700" fill="#1d2633">발사 <tspan font-weight="400" fill="#5f6b78">· 예 / 아니오</tspan></text>
+<text x="1070" y="630" font-size="19" fill="#5f6b78">쿨다운 0.15초 중에는 쏴도 나가지 않음</text>
+<text x="1045" y="720" font-size="20" fill="#5f6b78">적 위치는 자기 시야로만 안다 (전지적 정보 없음)</text>
+</svg>

@@ -33,6 +33,9 @@ struct FSHRoundRecord
 	 *  ★ 대치 감지 지표다. 서로 버티면 이 값이 길어진다. 구역 피해도 포함되므로
 	 *  ZoneStartSeconds 근처에 몰리면 "구역이 올 때까지 아무도 안 싸웠다" 는 뜻이다. */
 	float FirstDamageTime = -1.0f;
+
+	/** 이 라운드에 진영이 바뀌어 있었는가(팀 0 이 +X 쪽). 진영별 승률을 가르는 데 쓴다. */
+	bool bSidesSwapped = false;
 };
 
 /**
@@ -173,6 +176,20 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SH|Spawn", meta = (ClampMin = "0.0"))
 	float SpawnRadiusJitter = 100.0f;
+
+	/**
+	 *  리셋(ResetRound)마다 두 팀의 진영(−X 쪽 호 / +X 쪽 호)을 맞바꾼다.
+	 *
+	 *  ★ 왜 필요한가. 진영이 고정이면 팀 0 은 항상 −X 쪽에서, 팀 1 은 항상 +X 쪽에서 시작한다.
+	 *  엄폐물 배치가 완전히 대칭이 아니면 한쪽 진영이 유리하고, 같은 정책끼리인데도 팀 0 승률이
+	 *  54 → 60% 로 벌어졌다(TODO 1B.19). 정책도 "자기 진영에서 본 지형" 만 경험한다.
+	 *  ★ 학습기가 정한다(ASH_CombatTrainer::bAlternateSides) — 학습 모드에서만 켜고 평가는 고정 진영이다.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SH|Spawn")
+	bool bAlternateSides = false;
+
+	/** 지금 라운드에 진영이 바뀌어 있는가. true 면 팀 0 이 +X 쪽, 팀 1 이 −X 쪽이다. */
+	bool AreSidesSwapped() const { return bSidesSwapped; }
 
 	//~ 라운드 규칙 — 게임 규칙이기도 하다 -------------------------------------
 
@@ -378,6 +395,18 @@ protected:
 	 */
 	void ApplySpawnSlots();
 
+	/**
+	 *  유닛 하나의 시작 위치를 직접 정하는 훅. true 를 돌려주면 ApplySpawnSlots 가 슬롯 대신 이 값을 쓴다.
+	 *
+	 *  ★ ApplySpawnSlots 는 "슬롯 i → CollectUnits 의 i번째 유닛"으로 배치하고, 그 순서는 TActorIterator
+	 *  순서라 보장이 없다. 인게임 보드는 플레이어가 고른 칸을 **그 유닛**에게 줘야 하므로 이 훅으로 덮어쓴다.
+	 *  기본 구현은 false — 학습 아레나의 동작은 바뀌지 않는다.
+	 */
+	virtual bool GetSpawnTransformForUnit(const ABase_Character* Unit, int32 Team, FTransform& OutTransform) const
+	{
+		return false;
+	}
+
 	/** 양 팀에 유닛이 있는지 확인한다. 팀을 데이터로 두면 "둘 다 TeamId=0" 같은
 	 *  실수가 가능해지므로, 조용히 안 싸우는 대신 크게 알린다. */
 	void ValidateTeamAuthoring() const;
@@ -437,6 +466,9 @@ private:
 	float FirstDamageTime = -1.0f;
 	float ZoneDamageTimer = 0.0f;
 	float ZoneDamageTotal[2] = { 0.0f, 0.0f };
+
+	/** bAlternateSides 가 켜져 있으면 ResetRound 마다 뒤집힌다. 첫 라운드는 고정 진영이다. */
+	bool bSidesSwapped = false;
 
 	/** 소비되지 않은 라운드 기록. 리포트가 안 돌면 무한히 쌓이므로 상한을 둔다. */
 	TArray<FSHRoundRecord> PendingRoundRecords;
