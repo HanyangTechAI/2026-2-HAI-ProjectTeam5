@@ -13,6 +13,8 @@
 #include "GameFramework/Controller.h"
 #include "LearningAgentsEntitiesManagerComponent.h"
 #include "LearningAgentsEntityInterface.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace SHArena
@@ -194,6 +196,17 @@ void ASH_Arena::GetGymExtents(FVector& OutMinExtents, FVector& OutMaxExtents) co
 void ASH_Arena::BeginPlay()
 {
 	Super::BeginPlay();
+
+	int32 OverrideSwapSpawnSides = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHSwapSpawnSides="), OverrideSwapSpawnSides)
+		&& (OverrideSwapSpawnSides == 0 || OverrideSwapSpawnSides == 1))
+	{
+		bSwapSpawnSidesForEvaluation = OverrideSwapSpawnSides == 1;
+	}
+	if (bSwapSpawnSidesForEvaluation)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[SH_Arena] %s: 진단용 팀 스폰 좌우 교환 켬."), *GetName());
+	}
 
 	if (Team0UnitClass && Team1UnitClass && Team0UnitClass == Team1UnitClass)
 	{
@@ -674,7 +687,8 @@ FTransform ASH_Arena::GetSpawnTransformForSlot(int32 Team, int32 SlotIndex, int3
 	const int32 Slot = FMath::Clamp(SlotIndex, 0, Count - 1);
 
 	// 팀 0 은 -X 쪽, 팀 1 은 +X 쪽. 호의 중심을 기준으로 좌우 대칭 배치.
-	const float BaseAngleDeg = (Team == 0) ? 180.0f : 0.0f;
+	const int32 SpawnSideTeam = bSwapSpawnSidesForEvaluation ? 1 - Team : Team;
+	const float BaseAngleDeg = (SpawnSideTeam == 0) ? 180.0f : 0.0f;
 	const float Offset = (static_cast<float>(Slot) - 0.5f * static_cast<float>(Count - 1)) * ArcStepDegrees;
 
 	float AngleDeg = BaseAngleDeg + Offset;
