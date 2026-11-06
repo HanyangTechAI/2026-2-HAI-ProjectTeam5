@@ -420,6 +420,16 @@ void USH_ShooterInteractor::PerformAgentAction_Implementation(
 		return;
 	}
 
+	if (InitialActionOrderLogCount < 20)
+	{
+		++InitialActionOrderLogCount;
+		const int32 TeamId = Unit->CombatStats ? static_cast<int32>(Unit->CombatStats->TeamId) : INDEX_NONE;
+		const bool bAlive = Unit->bEntityEnabled && Unit->CombatStats && Unit->CombatStats->IsAlive();
+		UE_LOG(LogTemp, Display,
+			TEXT("[SH_ShooterInteractor] 초기 액션 콜백 #%d — AgentId=%d TeamId=%d 생존=%s"),
+			InitialActionOrderLogCount, AgentId, TeamId, bAlive ? TEXT("예") : TEXT("아니오"));
+	}
+
 	// 죽었거나 풀에서 빠졌으면 의도를 비우고 나간다.
 	// ★ 행동 자체는 이미 저장됐으므로 분포에는 영향이 없다 — 실행만 건너뛴다.
 	if (!Unit->bEntityEnabled || !Unit->CombatStats || !Unit->CombatStats->IsAlive())
@@ -503,8 +513,44 @@ void USH_ShooterInteractor::PerformAgentAction_Implementation(
 	// 쿨다운이 자연스럽게 발사율을 제한한다.
 	if (bFire && Unit->gun)
 	{
-		Unit->gun->PullTrigger();
+		if (bCollectingFireIntents)
+		{
+			FGunFireResult Shot = Unit->gun->PrepareShot();
+			if (Shot.bFired)
+			{
+				PendingFireGuns.Add(Unit->gun);
+				PendingFireResults.Add(Shot);
+			}
+		}
+		else
+		{
+			Unit->gun->PullTrigger();
+		}
 	}
+}
+
+void USH_ShooterInteractor::PerformAgentActions_Implementation(
+	const ULearningAgentsActionObject* InActionObject,
+	const TArray<FLearningAgentsActionObjectElement>& InActionObjectElements,
+	const TArray<int32>& AgentIds)
+{
+	PendingFireGuns.Reset();
+	PendingFireResults.Reset();
+	bCollectingFireIntents = true;
+
+	Super::PerformAgentActions_Implementation(InActionObject, InActionObjectElements, AgentIds);
+
+	bCollectingFireIntents = false;
+	for (int32 Index = 0; Index < PendingFireResults.Num(); ++Index)
+	{
+		if (AGun* Gun = PendingFireGuns[Index])
+		{
+			Gun->ResolveShot(PendingFireResults[Index]);
+		}
+	}
+
+	PendingFireGuns.Reset();
+	PendingFireResults.Reset();
 }
 
 void USH_ShooterInteractor::MakeAgentActionModifier_Implementation(

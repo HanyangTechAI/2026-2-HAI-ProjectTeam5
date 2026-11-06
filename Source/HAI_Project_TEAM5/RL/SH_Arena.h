@@ -437,6 +437,7 @@ private:
 	float FirstDamageTime = -1.0f;
 	float ZoneDamageTimer = 0.0f;
 	float ZoneDamageTotal[2] = { 0.0f, 0.0f };
+	bool bSwapSpawnSidesForEvaluation = false;
 
 	/** 소비되지 않은 라운드 기록. 리포트가 안 돌면 무한히 쌓이므로 상한을 둔다. */
 	TArray<FSHRoundRecord> PendingRoundRecords;
