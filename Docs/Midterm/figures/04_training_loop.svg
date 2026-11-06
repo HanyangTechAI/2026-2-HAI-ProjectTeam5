@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" font-family="Malgun Gothic, 'Apple SD Gothic Neo', sans-serif">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1d2633"/></marker></defs>
+<rect width="1600" height="900" fill="#ffffff"/>
+<text x="80" y="62" font-size="38" font-weight="700" fill="#1d2633">학습이 돌아가는 방식</text>
+<text x="80" y="104" font-size="24" fill="#5f6b78">0.05초마다 아래 고리가 한 바퀴 돈다 · 320개 유닛이 동시에</text>
+<rect x="80" y="230" width="250" height="170" rx="16" fill="#eef3f8" stroke="#2f6fb0" stroke-width="3"/>
+<text x="205.0" y="280" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">① 관측</text>
+<text x="205.0" y="325" font-size="21" text-anchor="middle" fill="#5f6b78">시야 스캔 후</text>
+<text x="205.0" y="357" font-size="21" text-anchor="middle" fill="#5f6b78">관측 벡터 176 수집</text>
+<line x1="334" y1="315.0" x2="378" y2="315.0" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="382" y="230" width="250" height="170" rx="16" fill="#eef3f8" stroke="#2f6fb0" stroke-width="3"/>
+<text x="507.0" y="280" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">② 행동 선택</text>
+<text x="507.0" y="325" font-size="21" text-anchor="middle" fill="#5f6b78">신경망이 회전 · 이동 ·</text>
+<text x="507.0" y="357" font-size="21" text-anchor="middle" fill="#5f6b78">발사를 확률로 고름</text>
+<line x1="636" y1="315.0" x2="680" y2="315.0" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="684" y="230" width="250" height="170" rx="16" fill="#eef3f8" stroke="#2f6fb0" stroke-width="3"/>
+<text x="809.0" y="280" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">③ 실행</text>
+<text x="809.0" y="325" font-size="21" text-anchor="middle" fill="#5f6b78">프레임마다 회전 · 이동</text>
+<text x="809.0" y="357" font-size="21" text-anchor="middle" fill="#5f6b78">총알 판정, HP 감소</text>
+<line x1="938" y1="315.0" x2="982" y2="315.0" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="986" y="230" width="250" height="170" rx="16" fill="#eef3f8" stroke="#2f6fb0" stroke-width="3"/>
+<text x="1111.0" y="280" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">④ 보상</text>
+<text x="1111.0" y="325" font-size="21" text-anchor="middle" fill="#5f6b78">준 피해 − 받은 피해,</text>
+<text x="1111.0" y="357" font-size="21" text-anchor="middle" fill="#5f6b78">킬 · 사망 · 팀 평균</text>
+<line x1="1240" y1="315.0" x2="1284" y2="315.0" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<rect x="1288" y="230" width="250" height="170" rx="16" fill="#eef3f8" stroke="#2f6fb0" stroke-width="3"/>
+<text x="1413.0" y="280" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">⑤ 기록</text>
+<text x="1413.0" y="325" font-size="21" text-anchor="middle" fill="#5f6b78">(관측, 행동, 보상)을</text>
+<text x="1413.0" y="357" font-size="21" text-anchor="middle" fill="#5f6b78">버퍼에 저장</text>
+<path d="M1413.0,404 L1413.0,460 L205.0,460 L205.0,408" fill="none" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<text x="809.0" y="492" font-size="21" text-anchor="middle" fill="#1d2633">다음 0.05초</text>
+<rect x="80" y="600" width="1440" height="200" rx="16" fill="#f3eefa" stroke="#8e5bb5" stroke-width="3"/>
+<text x="110" y="650" font-size="27" font-weight="700" fill="#1d2633">버퍼가 65,536 스텝 차면 — PPO 갱신 (파이썬, GPU)</text>
+<text x="110" y="695" font-size="22" fill="#5f6b78">좋은 결과로 이어진 행동의 확률을 높이고, 나쁜 결과의 확률을 낮추도록 신경망 가중치를 조정한다</text>
+<text x="110" y="731" font-size="22" fill="#5f6b78">두 팀이 모두 같은 신경망이다 (self-play) → 상대도 함께 강해진다</text>
+<text x="110" y="767" font-size="22" fill="#5f6b78">1시간마다 가중치를 Snapshots/&lt;날짜&gt;/cum&lt;누적 시간&gt;/ 에 저장 · 저장한 것에서 이어서 학습 · 고정 상대와 평가</text>
+</svg>

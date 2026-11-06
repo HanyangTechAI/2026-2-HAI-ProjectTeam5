@@ -73,3 +73,5 @@ Plugins/**/Intermediate/*
 
 # Cache files for the editor to use
 DerivedDataCache/*
+# 발표 자료 원본은 100 MB 를 넘어 GitHub 에 올릴 수 없다
+Docs/Midterm/*.pptx
