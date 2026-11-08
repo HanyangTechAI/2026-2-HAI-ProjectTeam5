@@ -23,31 +23,21 @@
 #include "SH_ScriptBotController.h"
 #include "SH_ShooterInteractor.h"
 #include "SH_ShooterTrainingEnv.h"
+#include "SH_SnapshotFiles.h"
 #include "SH_VisionComponent.h"
 
 namespace
 {
-	/**
-	 *  스냅샷 폴더 안의 파일 경로.
-	 *  새 형식은 파일 이름 앞에 폴더 이름(= 누적 시간)이 붙는다: cum005h00m/cum005h00m_policy.bin.
-	 *  그 파일이 없으면 옛 형식(Saved/SHSnapshots/.../policy.bin)으로 본다.
-	 */
-	FString SnapshotFile(const FString& Directory, const TCHAR* FileName)
-	{
-		const FString Prefixed = FPaths::Combine(Directory, FPaths::GetCleanFilename(Directory) + TEXT("_") + FileName);
-		return FPaths::FileExists(Prefixed) ? Prefixed : FPaths::Combine(Directory, FileName);
-	}
-
 	bool HasPolicyFile(const FString& Directory)
 	{
-		return FPaths::FileExists(SnapshotFile(Directory, TEXT("policy.bin")));
+		return FPaths::FileExists(SHSnapshot::ResolveFile(Directory, TEXT("policy.bin")));
 	}
 
 	/** meta.txt 의 key=value 줄을 읽는다. */
 	bool ReadSnapshotMeta(const FString& Directory, TMap<FString, FString>& OutMeta)
 	{
 		FString Text;
-		if (!FFileHelper::LoadFileToString(Text, *SnapshotFile(Directory, TEXT("meta.txt"))))
+		if (!FFileHelper::LoadFileToString(Text, *SHSnapshot::ResolveFile(Directory, TEXT("meta.txt"))))
 		{
 			return false;
 		}
@@ -212,6 +202,12 @@ void ASH_CombatTrainer::BeginPlay()
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHGradClip="), OverrideGradClip) && (OverrideGradClip == 0 || OverrideGradClip == 1))
 	{
 		TrainingSettings.bUseGradNormMaxClipping = (OverrideGradClip == 1);
+	}
+
+	int32 OverrideAlternateSides = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHAlternateSides="), OverrideAlternateSides) && (OverrideAlternateSides == 0 || OverrideAlternateSides == 1))
+	{
+		AlternateSidesOverride = OverrideAlternateSides;
 	}
 
 	float OverrideSnapshotInterval = -1.0f;
@@ -769,6 +765,8 @@ void ASH_CombatTrainer::Assemble()
 		}
 		// 상대 혼합: self-play 아레나는 승패 보상 0 (ASH_Arena::OutcomeRewardScale 주석).
 		Arena->OutcomeRewardScale = (bOpponentMix && GetArenaRole(Arena) == ESHArenaRole::SelfPlay) ? 0.0f : 1.0f;
+		// 진영 교대: 명령줄이 있으면 그 값, 없으면 학습 모드에서만 켠다(헤더 bAlternateSides 주석).
+		Arena->bAlternateSides = (AlternateSidesOverride >= 0) ? (AlternateSidesOverride == 1) : (!bEvalMode && bAlternateSides);
 		Arenas.Add(Arena);
 	}
 
@@ -782,12 +780,13 @@ void ASH_CombatTrainer::Assemble()
 	{
 		UE_LOG(LogTemp, Display,
 			TEXT("[SH_CombatTrainer] 라운드 규칙 — 아레나 %d개, 상한 %.0f초, 시간 초과 = %s, 축소 구역 %s ")
-			TEXT("(%.0f초부터 %.0f초 동안 %.0f → %.0f cm, 초당 %.0f), 스폰 지터 ±%.0f° / ±%.0f cm"),
+			TEXT("(%.0f초부터 %.0f초 동안 %.0f → %.0f cm, 초당 %.0f), 스폰 지터 ±%.0f° / ±%.0f cm, 진영 교대 %s"),
 			Arenas.Num(), First->RoundTimeLimitSeconds,
 			First->bTimeoutIsLossForBoth ? TEXT("양쪽 패배") : TEXT("무승부"),
 			First->bShrinkZone ? TEXT("켬") : TEXT("끔"),
 			First->ZoneStartSeconds, First->ZoneShrinkSeconds, First->ArenaRadius, First->ZoneFinalRadius,
-			First->ZoneDamagePerSecond, First->SpawnAngleJitterDegrees, First->SpawnRadiusJitter);
+			First->ZoneDamagePerSecond, First->SpawnAngleJitterDegrees, First->SpawnRadiusJitter,
+			First->bAlternateSides ? TEXT("켬 (라운드마다)") : TEXT("끔"));
 	}
 	UE_LOG(LogTemp, Display,
 		TEXT("[SH_CombatTrainer] 보상 — 준/받은 피해 %.2f/%.2f, 킬/사망 %.2f/%.2f, 빗맞힘 %.3f, 결과 ±%.1f, 팀 스피릿 %.2f ")
@@ -814,7 +813,7 @@ void ASH_CombatTrainer::Assemble()
 			TEXT("- 시작 정책: %s\n")
 			TEXT("- 실행 한도 %s, 스냅샷 주기 %s\n")
 			TEXT("- self-play %s, 상대 혼합 %s, 학습 에이전트 %d, 관측 크기 %d, 버퍼 %d 스텝\n")
-			TEXT("- 보상: 결과 ±%.1f, 팀 스피릿 %.2f, 시간 초과 %s, 축소 구역 %s\n")
+			TEXT("- 보상: 결과 ±%.1f, 팀 스피릿 %.2f, 시간 초과 %s, 축소 구역 %s, 진영 교대 %s\n")
 			TEXT("- 스냅샷:\n"),
 			*SnapshotRunStamp, *Now.ToString(TEXT("%Y-%m-%d %H:%M")),
 			ResumeDir.IsEmpty()
@@ -827,7 +826,8 @@ void ASH_CombatTrainer::Assemble()
 			Units.Num(), Interactor->GetObservationVectorSize(), TrainerSettings.MaximumRecordedStepsPerIteration,
 			TrainingEnvironment->OutcomeReward, TrainingEnvironment->TeamSpirit,
 			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bTimeoutIsLossForBoth) ? TEXT("양쪽 패배") : TEXT("무승부"),
-			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bShrinkZone) ? TEXT("켬") : TEXT("끔"));
+			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bShrinkZone) ? TEXT("켬") : TEXT("끔"),
+			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bAlternateSides) ? TEXT("켬") : TEXT("끔"));
 		AppendDailyLog(FString());
 	}
 
@@ -1190,16 +1190,16 @@ bool ASH_CombatTrainer::LoadOpponentSnapshot(const FString& Directory)
 	const TCHAR* Files[] = { TEXT("policy.bin"), TEXT("encoder.bin"), TEXT("decoder.bin") };
 	for (const TCHAR* File : Files)
 	{
-		if (!FPaths::FileExists(SnapshotFile(Directory, File)))
+		if (!FPaths::FileExists(SHSnapshot::ResolveFile(Directory, File)))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 상대 스냅샷 파일이 없다: %s"), *SnapshotFile(Directory, File));
+			UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 상대 스냅샷 파일이 없다: %s"), *SHSnapshot::ResolveFile(Directory, File));
 			return false;
 		}
 	}
 	auto Load = [&Directory](ULearningAgentsNeuralNetwork* Network, const TCHAR* FileName)
 	{
 		FFilePath Path;
-		Path.FilePath = SnapshotFile(Directory, FileName);
+		Path.FilePath = SHSnapshot::ResolveFile(Directory, FileName);
 		Network->LoadNetworkFromSnapshot(Path);
 	};
 	Load(OpponentPolicy->GetPolicyNetworkAsset(),  TEXT("policy.bin"));
@@ -1614,7 +1614,7 @@ bool ASH_CombatTrainer::LoadResumeSnapshot(const FString& Directory)
 	}
 
 	// 크리틱이 없으면 가치 예측이 무작위에서 시작해 어드밴티지가 엉망이 된다 — 정책이 초반에 망가질 수 있다.
-	const FString CriticPath = SnapshotFile(Directory, TEXT("critic.bin"));
+	const FString CriticPath = SHSnapshot::ResolveFile(Directory, TEXT("critic.bin"));
 	if (Critic && FPaths::FileExists(CriticPath))
 	{
 		FFilePath Path;
@@ -1663,9 +1663,9 @@ bool ASH_CombatTrainer::LoadPolicySnapshot(const FString& Directory)
 	const TCHAR* Files[] = { TEXT("policy.bin"), TEXT("encoder.bin"), TEXT("decoder.bin") };
 	for (const TCHAR* File : Files)
 	{
-		if (!FPaths::FileExists(SnapshotFile(Directory, File)))
+		if (!FPaths::FileExists(SHSnapshot::ResolveFile(Directory, File)))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 스냅샷 파일이 없다: %s"), *SnapshotFile(Directory, File));
+			UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 스냅샷 파일이 없다: %s"), *SHSnapshot::ResolveFile(Directory, File));
 			return false;
 		}
 	}
@@ -1675,7 +1675,7 @@ bool ASH_CombatTrainer::LoadPolicySnapshot(const FString& Directory)
 	auto Load = [&Directory](ULearningAgentsNeuralNetwork* Network, const TCHAR* FileName)
 	{
 		FFilePath Path;
-		Path.FilePath = SnapshotFile(Directory, FileName);
+		Path.FilePath = SHSnapshot::ResolveFile(Directory, FileName);
 		Network->LoadNetworkFromSnapshot(Path);
 	};
 	Load(Policy->GetPolicyNetworkAsset(),  TEXT("policy.bin"));
@@ -1789,12 +1789,14 @@ void ASH_CombatTrainer::Report(double RealElapsed)
 	double RoundDurationSum = 0.0;
 	double FirstDamageSum = 0.0;
 	int32 FirstDamageCount = 0;
+	// 진영별 승: [0] = −X 쪽(서), [1] = +X 쪽(동). 진영이 바뀐 라운드는 팀 0 이 동쪽이다.
+	int32 SideWins[2] = { 0, 0 };
 	for (const FSHRoundRecord& Round : Rounds)
 	{
 		switch (Round.End)
 		{
-		case ESHRoundEnd::Team0Wins:  ++RoundWins[0]; break;
-		case ESHRoundEnd::Team1Wins:  ++RoundWins[1]; break;
+		case ESHRoundEnd::Team0Wins:  ++RoundWins[0]; ++SideWins[Round.bSidesSwapped ? 1 : 0]; break;
+		case ESHRoundEnd::Team1Wins:  ++RoundWins[1]; ++SideWins[Round.bSidesSwapped ? 0 : 1]; break;
 		case ESHRoundEnd::Timeout:    ++RoundTimeouts; break;
 		case ESHRoundEnd::MutualWipe: ++RoundMutual; break;
 		default: break;
@@ -1865,9 +1867,9 @@ void ASH_CombatTrainer::Report(double RealElapsed)
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[SH_CombatTrainer]        라운드 %d (팀0 승 %d / 팀1 승 %d / 시간초과 %d (%.0f%%) / 동시전멸 %d) | ")
-		TEXT("평균 길이 %.1f초 | 첫 피해 %.1f초 | 최근접 적 %.0f cm"),
+		TEXT("진영 승 서 %d / 동 %d | 평균 길이 %.1f초 | 첫 피해 %.1f초 | 최근접 적 %.0f cm"),
 		Rounds.Num(), RoundWins[0], RoundWins[1], RoundTimeouts, TimeoutRate, RoundMutual,
-		MeanRoundDuration, MeanFirstDamage, MeanNearestEnemy);
+		SideWins[0], SideWins[1], MeanRoundDuration, MeanFirstDamage, MeanNearestEnemy);
 
 	// 역할별 전적 (학습 정책 = 팀 0 의 승). 혼합이나 평가 상대가 있을 때만.
 	if (bOpponentMix || bHasOpponents)

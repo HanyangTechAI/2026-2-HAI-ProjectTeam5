@@ -1,0 +1,13 @@
+label=interval
+run=20261025-184000
+saved_at=2026-10-25 19:40:00
+cumulative_seconds=43211
+elapsed_seconds=3600
+decisions=40199
+agents=320
+selfplay=1
+outcome_reward=0.000
+team_spirit=0.300
+obs_size=176
+total_reward_steps=150352640
+resumed_from=C:/UnrealProjects/HAI_Project_TEAM5/Snapshots/2026-10-15/cum011h00m

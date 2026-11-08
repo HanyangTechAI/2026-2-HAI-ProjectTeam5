@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" font-family="Malgun Gothic, 'Apple SD Gothic Neo', sans-serif">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1d2633"/></marker></defs>
+<rect width="1600" height="900" fill="#ffffff"/>
+<text x="80" y="62" font-size="38" font-weight="700" fill="#1d2633">학습 시스템 구조</text>
+<text x="80" y="104" font-size="24" fill="#5f6b78">Unreal Engine 5.8 + Learning Agents 0.2 · 결정 20회/초 · PPO 학습은 별도 파이썬 프로세스(GPU)</text>
+<rect x="60" y="140" width="1030" height="670" rx="18" fill="none" stroke="#c9d1da" stroke-width="2" stroke-dasharray="10 8"/>
+<text x="84" y="178" font-size="22" font-weight="700" fill="#5f6b78">언리얼 엔진 (게임 시뮬레이션)</text>
+<rect x="90" y="200" width="970" height="170" rx="14" fill="#eef3f8" stroke="#2f6fb0" stroke-width="3"/>
+<text x="575.0" y="242" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">아레나 16개 × 유닛 20명 (10 대 10) = 에이전트 320</text>
+<text x="575.0" y="282" font-size="21" text-anchor="middle" fill="#5f6b78">유닛: 시야 90° · 레이 16개, 히트스캔 총(0.15초 쿨다운), HP 100 · 한 발 10 피해</text>
+<text x="575.0" y="314" font-size="21" text-anchor="middle" fill="#5f6b78">라운드: 한 팀 전멸 또는 45초 · 20초부터 안전 구역 축소 · 두 팀 모두 같은 정책 (self-play)</text>
+<rect x="90" y="520" width="300" height="270" rx="14" fill="#fbf1e6" stroke="#d9822b" stroke-width="3"/>
+<text x="240.0" y="562" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">행동</text>
+<text x="240.0" y="602" font-size="21" text-anchor="middle" fill="#5f6b78">회전 7단계</text>
+<text x="240.0" y="634" font-size="21" text-anchor="middle" fill="#5f6b78">이동 5가지</text>
+<text x="240.0" y="666" font-size="21" text-anchor="middle" fill="#5f6b78">발사 예/아니오</text>
+<rect x="430" y="520" width="290" height="270" rx="14" fill="#f3eefa" stroke="#8e5bb5" stroke-width="3"/>
+<text x="575.0" y="562" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">정책 신경망</text>
+<text x="575.0" y="602" font-size="21" text-anchor="middle" fill="#5f6b78">언리얼 안에서 추론</text>
+<text x="575.0" y="634" font-size="21" text-anchor="middle" fill="#5f6b78">320 유닛이 공유</text>
+<text x="575.0" y="666" font-size="21" text-anchor="middle" fill="#5f6b78">결정 20회/초</text>
+<rect x="760" y="520" width="300" height="270" rx="14" fill="#eef7f1" stroke="#3a9d5d" stroke-width="3"/>
+<text x="910.0" y="562" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">관측</text>
+<text x="910.0" y="602" font-size="21" text-anchor="middle" fill="#5f6b78">벡터 176</text>
+<text x="910.0" y="634" font-size="21" text-anchor="middle" fill="#5f6b78">시야 · 적 · 아군</text>
+<text x="910.0" y="666" font-size="21" text-anchor="middle" fill="#5f6b78">기억 · 팀 · 자신</text>
+<rect x="1170" y="330" width="370" height="250" rx="14" fill="#f3eefa" stroke="#8e5bb5" stroke-width="3"/>
+<text x="1355.0" y="372" font-size="27" font-weight="700" text-anchor="middle" fill="#1d2633">PPO 학습기 (파이썬)</text>
+<text x="1355.0" y="412" font-size="21" text-anchor="middle" fill="#5f6b78">버퍼 65,536 스텝마다 갱신</text>
+<text x="1355.0" y="444" font-size="21" text-anchor="middle" fill="#5f6b78">torch 2.8 + CUDA 12.8</text>
+<text x="1355.0" y="476" font-size="21" text-anchor="middle" fill="#5f6b78">RTX 5080</text>
+<text x="1355.0" y="508" font-size="21" text-anchor="middle" fill="#5f6b78">1시간마다 스냅샷 저장</text>
+<line x1="910" y1="372" x2="910" y2="516" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<text x="924" y="452" font-size="20" fill="#1d2633">관측 수집</text>
+<line x1="758" y1="655" x2="724" y2="655" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<line x1="428" y1="655" x2="394" y2="655" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<line x1="240" y1="516" x2="240" y2="374" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<text x="254" y="452" font-size="20" fill="#1d2633">행동 실행</text>
+<line x1="1062" y1="285" x2="1166" y2="400" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<text x="1120" y="262" font-size="20" fill="#1d2633">경험 (관측 · 행동 · 보상)</text>
+<path d="M1355,582 L1355,840 L575,840 L575,796" fill="none" stroke="#1d2633" stroke-width="3" marker-end="url(#a)"/>
+<text x="965" y="828" font-size="20" text-anchor="middle" fill="#1d2633">갱신된 가중치</text>
+</svg>
