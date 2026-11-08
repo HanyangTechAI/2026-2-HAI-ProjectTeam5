@@ -88,6 +88,16 @@ class HAI_PROJECT_TEAM5_API USH_ShooterInteractor : public ULearningAgentsIntera
 	GENERATED_BODY()
 
 public:
+	/** Blend policy Turn with bounded aim toward the nearest visible enemy. No schema change. */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimAssist")
+	bool bAimAssist = false;
+
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimAssist", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AimAssistStrength = 1.0f;
+
+	/** Set by the trainer; used to reach the target without exceeding MaxTurnRateDeg. */
+	float AimAssistDecisionPeriod = 0.05f;
+
 	/** 집합(Enemies/Allies) 어텐션 설정. 스키마에 굳어지므로 나중에 못 바꾼다.
 	 *  집합 하나의 인코딩 크기 = AttentionHeadNum x ValueEncodingSize + 1(원소 수). */
 	UPROPERTY(EditAnywhere, Category = "SH|RL|Schema", meta = (ClampMin = "1"))
@@ -179,6 +189,9 @@ public:
 
 		/** 행동을 실제로 실행한 결정 횟수 (살아 있는 에이전트만). 분모다. */
 		int64 Decisions = 0;
+
+		/** Live decisions with a visible target and nonzero aim assistance. */
+		int64 AssistedDecisions = 0;
 	};
 
 	/** 통계를 읽고 **비운다**. ASH_CombatTrainer::Report 가 구간마다 부른다. */

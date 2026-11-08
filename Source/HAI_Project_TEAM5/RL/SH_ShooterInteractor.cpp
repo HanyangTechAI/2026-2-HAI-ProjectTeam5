@@ -493,6 +493,20 @@ void USH_ShooterInteractor::PerformAgentAction_Implementation(
 	// ★ 여기서 직접 SetControlRotation 하면 20Hz 로만 돌아 프레임률에 따라 실효
 	//   각속도가 달라진다. ASH_RLCharacter::Tick 이 DeltaTime 을 곱해 매 프레임 적용한다.
 	Unit->PendingTurnRateDeg = TurnRateFractions[FMath::Clamp(TurnIndex, 0, SHRL::TurnBins - 1)] * Unit->MaxTurnRateDeg;
+	if (bAimAssist && AimAssistStrength > 0.0f && Unit->Vision)
+	{
+		// Same scan/visibility rules as observations. Never aim through cover or at hidden enemies.
+		Unit->Vision->Scan();
+		if (!Unit->Vision->GetVisibleEnemies().IsEmpty())
+		{
+			const float TargetRate = FMath::Clamp(
+				Unit->Vision->GetVisibleEnemies()[0].AngleDeg / FMath::Max(AimAssistDecisionPeriod, 0.001f),
+				-Unit->MaxTurnRateDeg, Unit->MaxTurnRateDeg);
+			Unit->PendingTurnRateDeg = FMath::Lerp(Unit->PendingTurnRateDeg, TargetRate,
+				FMath::Clamp(AimAssistStrength, 0.0f, 1.0f));
+			++ActionStats.AssistedDecisions;
+		}
+	}
 
 	// --- 이동: 조준선 기준 상대 방향 -------------------------------------------
 	const FVector& LocalDirection = MoveDirections[FMath::Clamp(MoveIndex, 0, SHRL::MoveBins - 1)];

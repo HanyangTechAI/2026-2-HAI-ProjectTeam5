@@ -65,23 +65,34 @@ float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit)
 	++GathersInterval;
 
 	float Reward = 0.0f;
+	FSHRewardStats Terms;
 
 	// --- 전투 (제로섬) --------------------------------------------------------
-	Reward += DamageDealtWeight * (Stats->DamageDealtAccum / 100.0f);
-	Reward -= DamageTakenWeight * (Stats->DamageTakenAccum / 100.0f);
-	Reward += KillBonus * static_cast<float>(Stats->KillsAccum);
+	const float Dealt = DamageDealtWeight * (Stats->DamageDealtAccum / 100.0f);
+	const float Taken = -DamageTakenWeight * (Stats->DamageTakenAccum / 100.0f);
+	const float Kills = KillBonus * static_cast<float>(Stats->KillsAccum);
+	Reward += Dealt;
+	Reward += Taken;
+	Reward += Kills;
+	Terms.DamageDealt = Dealt;
+	Terms.DamageTaken = Taken;
+	Terms.Kill = Kills;
 
 	const int32 Missed = FMath::Max(0, Stats->ShotsFiredAccum - Stats->ShotsHitAccum);
-	Reward -= MissWeight * static_cast<float>(Missed);
+	const float MissReward = -MissWeight * static_cast<float>(Missed);
+	Reward += MissReward;
+	Terms.Miss = MissReward;
 
 	if (Stats->bDiedThisInterval)
 	{
 		Reward -= DeathPenalty;
+		Terms.Death = -DeathPenalty;
 	}
 
 	if (bAlive)
 	{
 		Reward -= TimePenalty;
+		Terms.Time = -TimePenalty;
 
 		// --- 셰이핑 -----------------------------------------------------------
 		const float ShapingScale = GetShapingScale();
@@ -94,12 +105,16 @@ float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit)
 
 				if (Vision->IsHostileVisible())
 				{
-					Reward += ShapingScale * SeeWeight;
+					const float SeeReward = bSeeReward ? ShapingScale * SeeWeight * SeeRewardScale : 0.0f;
+					Reward += SeeReward;
+					Terms.See = SeeReward;
 
 					const float HalfFov = FMath::Max(0.5f * Vision->FOVDegrees, KINDA_SMALL_NUMBER);
 					const float Alignment = 1.0f - FMath::Abs(Vision->GetHostileAngleDeg()) / HalfFov;
-					Reward += ShapingScale * AlignWeight
-						* FMath::Pow(FMath::Max(Alignment, 0.0f), 4.0f);
+					const float AlignReward = bAimReward ? ShapingScale * AlignWeight * AimRewardScale
+						* FMath::Pow(FMath::Max(Alignment, 0.0f), 4.0f) : 0.0f;
+					Reward += AlignReward;
+					Terms.Align = AlignReward;
 				}
 			}
 		}
@@ -107,6 +122,14 @@ float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit)
 
 	// ★ 반드시 비운다. 안 비우면 같은 피해가 다음 스텝에 또 들어간다.
 	Stats->ConsumeRewardAccumulators();
+	RewardStats.DamageDealt += Terms.DamageDealt;
+	RewardStats.DamageTaken += Terms.DamageTaken;
+	RewardStats.Kill += Terms.Kill;
+	RewardStats.Miss += Terms.Miss;
+	RewardStats.Death += Terms.Death;
+	RewardStats.Time += Terms.Time;
+	RewardStats.See += Terms.See;
+	RewardStats.Align += Terms.Align;
 
 	return Reward;
 }
@@ -163,6 +186,9 @@ void USH_ShooterTrainingEnv::GatherAgentReward_Implementation(float& OutReward, 
 	if (!Unit || !Unit->CombatStats)
 	{
 		OutReward = Individual;
+		RewardStats.IndividualApplied += Individual;
+		RewardStats.Total += Individual;
+		++RewardStats.Samples;
 		return;
 	}
 
@@ -182,6 +208,8 @@ void USH_ShooterTrainingEnv::GatherAgentReward_Implementation(float& OutReward, 
 	const float RampScale = GetRoundRewardScale();
 	const float Tau = FMath::Clamp(TeamSpirit, 0.0f, 1.0f) * RampScale;
 	float Reward = (1.0f - Tau) * Individual + Tau * TeamMean;
+	RewardStats.IndividualApplied += (1.0f - Tau) * Individual;
+	RewardStats.TeamApplied += Tau * TeamMean;
 
 	// --- 라운드 결과 · 시계 비용 ---------------------------------------------
 	// ★ GatherCompletion 이 같은 프레임에 이 아레나 전원에게 Termination 을 냈다.
@@ -193,15 +221,27 @@ void USH_ShooterTrainingEnv::GatherAgentReward_Implementation(float& OutReward, 
 		// 아레나별 배율: 상대 혼합에서 self-play 아레나는 0 (ASH_Arena::OutcomeRewardScale 주석).
 		if (Arena->IsRoundOver())
 		{
-			Reward += OutcomeReward * RampScale * Arena->OutcomeRewardScale * Arena->GetRoundOutcome(Team);
+			const float Outcome = OutcomeReward * RampScale * Arena->OutcomeRewardScale * Arena->GetRoundOutcome(Team);
+			Reward += Outcome;
+			RewardStats.Outcome += Outcome;
 		}
 		else
 		{
-			Reward -= GetRoundClockCost() * Arena->OutcomeRewardScale;
+			const float Clock = -GetRoundClockCost() * Arena->OutcomeRewardScale;
+			Reward += Clock;
+			RewardStats.Clock += Clock;
 		}
 	}
 
 	OutReward = Reward;
+	RewardStats.Total += Reward;
+	++RewardStats.Samples;
+}
+
+void USH_ShooterTrainingEnv::ConsumeRewardStats(FSHRewardStats& OutStats)
+{
+	OutStats = RewardStats;
+	RewardStats = FSHRewardStats();
 }
 
 void USH_ShooterTrainingEnv::GatherAgentCompletion_Implementation(
