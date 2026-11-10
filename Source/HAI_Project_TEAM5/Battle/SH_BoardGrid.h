@@ -20,6 +20,13 @@ struct FSHBoardGrid
 	int32     Columns  = 14;                // X 방향 칸 수
 	int32     Rows     = 14;                // Y 방향 칸 수
 
+	/**
+	 *  중심이 (0,0)이고 반경 Radius 의 원을 다 덮는 정사각형 격자.
+	 *  칸 수는 짝수로 맞춘다 — 그래야 가운데 선(x = 0)이 칸 경계가 되어 양 팀 구역이 대칭이다.
+	 *  반경 1,750 이면 기본값과 같은 14 x 14, 2,450 이면 20 x 20 이다.
+	 */
+	[[nodiscard]] static FSHBoardGrid Covering(double Radius, double InCellSize = DefaultCellSize);
+
 	[[nodiscard]] bool IsInside(FIntPoint Cell) const;
 	[[nodiscard]] FVector2D CellCenter(FIntPoint Cell) const;
 

@@ -30,6 +30,10 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FSHOnPlacementChanged, int32 /*Placed*/, in
  *  부르면 배치 중에 45초 시간 초과가 난다.
  *
  *  ★ 보드 액터를 회전시켜 놓지 않는다. 아레나 중심과 격자 변환이 회전 0 을 가정한다.
+ *
+ *  ★ 여러 아레나 중에서 고르기. 레벨에 보드를 여러 개(같은 위치여도 된다) 놓고 하나만 bActiveBoard 를 켠다.
+ *  꺼진 보드는 에디터 · 게임 양쪽에서 숨고 콜리전이 꺼지며, 유닛을 만들지도 Tick 하지도 않는다.
+ *  게임모드는 켜진 보드를 쓴다.
  */
 UCLASS()
 class HAI_PROJECT_TEAM5_API ASH_BattleBoard : public ASH_Arena
@@ -38,6 +42,9 @@ class HAI_PROJECT_TEAM5_API ASH_BattleBoard : public ASH_Arena
 
 public:
 	ASH_BattleBoard();
+
+	/** 이 레벨에서 쓰는 보드인가. */
+	[[nodiscard]] bool IsActiveBoard() const { return bActiveBoard; }
 
 	//~ 배치 단계 -------------------------------------------------------------
 
@@ -79,9 +86,14 @@ public:
 
 	virtual void Tick(float DeltaSeconds) override;
 
+	virtual void OnConstruction(const FTransform& Transform) override;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual bool GetSpawnTransformForUnit(const ABase_Character* Unit, int32 Team, FTransform& OutTransform) const override;
+
+	/** 이 보드는 아레나의 원형 스폰 슬롯을 쓰지 않는다(칸에 배치한다). 슬롯이 엄폐물에 걸려도 상관없다. */
+	virtual void ValidateSpawnSlotsClear() const override {}
 
 private:
 	[[nodiscard]] ASH_RLCharacter* SpawnUnit(const USH_UnitDefinition& Definition, int32 Team, FIntPoint Cell);
@@ -104,9 +116,17 @@ private:
 	UPROPERTY(EditAnywhere, Category = "SH|Battle")
 	TObjectPtr<USH_EnemyLayout> EnemyLayout;
 
-	/** 아군이 쓸 수 있는 열 수(X 방향, 서쪽부터). 6이면 보드 기준 x < −250 cm. */
-	UPROPERTY(EditAnywhere, Category = "SH|Battle", meta = (ClampMin = "1"))
-	int32 AllyColumns = 6;
+	/** 끄면 이 보드를 쓰지 않는다. 레벨에서 켜진 보드는 하나여야 한다. */
+	UPROPERTY(EditAnywhere, Category = "SH|Battle")
+	bool bActiveBoard = true;
+
+	/**
+	 *  아군 구역의 동쪽 경계(보드 기준 X, cm). 칸 중심이 이 값보다 서쪽이면 아군 칸이다.
+	 *  ★ 열 수가 아니라 거리로 정한 이유: 격자 크기가 ArenaRadius 를 따라 바뀐다.
+	 *  −250 이면 14 x 14 격자에서 서쪽 6열, 20 x 20 격자에서 서쪽 9열이다(둘 다 가운데 선 바로 서쪽 한 열은 비운다).
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|Battle", meta = (ClampMax = "0.0"))
+	float AllyZoneMaxX = -250.0f;
 
 	/** 배치 단계에 칸을 그린다. 디버그 선이라 출고 빌드에서는 보이지 않는다 — 나중에 머티리얼로 바꾼다. */
 	UPROPERTY(EditAnywhere, Category = "SH|Battle")

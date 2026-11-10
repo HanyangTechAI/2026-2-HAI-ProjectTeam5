@@ -437,8 +437,10 @@ protected:
 	 *  BeginPlay 시점에는 GymsManager 가 아직 RandomStream 을 주입하지 않았고
 	 *  (LearningAgentsGymsManager.cpp:86-89 순서), 지터 범위를 전부 훑는 것은 과하다.
 	 *  지터를 쓰면 DrawDebugArena 로 눈으로 확인할 것.
+	 *
+	 *  ★ virtual 인 이유: 인게임 보드(ASH_BattleBoard)는 슬롯을 쓰지 않고 칸에 배치하므로 검사를 끈다.
 	 */
-	void ValidateSpawnSlotsClear() const;
+	virtual void ValidateSpawnSlotsClear() const;
 
 	/** 팔각형 벽. 개수는 고정(생성자에서 만들어야 하므로). */
 	static constexpr int32 NumWalls = 8;

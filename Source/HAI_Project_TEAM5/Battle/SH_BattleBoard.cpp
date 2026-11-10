@@ -22,9 +22,39 @@ ASH_BattleBoard::ASH_BattleBoard()
 	// ★ 생성자에서 월드·다른 액터를 건드리지 않는다. 이 생성자는 CDO 를 만들 때도 돈다 — 월드가 없다.
 }
 
+void ASH_BattleBoard::OnConstruction(const FTransform& Transform)
+{
+	// ★ 켤 때 다시 보이게 하는 것을 Super 보다 먼저 한다. 아레나의 RebuildArenaGeometry 가
+	//   bAutoBuildBoundary=false 이면 C++ 벽을 숨기는데, 그 결정을 덮어쓰지 않기 위해서다.
+	//   (C++ 컴포넌트는 생성 스크립트를 다시 돌려도 새로 만들어지지 않아 이전 숨김 상태가 남는다.)
+	if (bActiveBoard && RootComponent)
+	{
+		RootComponent->SetVisibility(true, /*bPropagateToChildren=*/true);
+	}
+
+	Super::OnConstruction(Transform);
+
+	// 꺼진 보드는 에디터 뷰포트에서도 숨긴다. 같은 위치에 보드 두 개를 겹쳐 놓아도 하나만 보인다.
+	// 콜리전도 끈다 — 켜진 보드의 막힌 칸 검사와 유닛 이동이 꺼진 보드의 엄폐물에 걸리지 않게.
+	if (!bActiveBoard && RootComponent)
+	{
+		RootComponent->SetVisibility(false, /*bPropagateToChildren=*/true);
+	}
+	SetActorEnableCollision(bActiveBoard);
+}
+
 void ASH_BattleBoard::BeginPlay()
 {
 	Super::BeginPlay();
+
+	if (!bActiveBoard)
+	{
+		SetActorTickEnabled(false);   // 배치 칸도 그리지 않고 라운드 판정도 하지 않는다
+		return;
+	}
+
+	// 격자는 아레나 크기를 따른다. 반경 1,750 → 14 x 14, 2,450 → 20 x 20.
+	Grid = FSHBoardGrid::Covering(ArenaRadius);
 
 	// ★ 순서: 막힌 칸을 유닛보다 먼저 계산한다. 유닛 캡슐도 WorldStatic 채널을 막아서
 	//   나중에 계산하면 유닛이 선 칸이 "막힘" 이 된다.
@@ -43,7 +73,7 @@ TOptional<FIntPoint> ASH_BattleBoard::WorldToCell(const FVector& World) const
 
 bool ASH_BattleBoard::IsAllyCell(const FIntPoint Cell) const
 {
-	return Grid.IsInside(Cell) && Cell.X < AllyColumns;
+	return Grid.IsInside(Cell) && Grid.CellCenter(Cell).X < AllyZoneMaxX;
 }
 
 bool ASH_BattleBoard::IsBlocked(const FIntPoint Cell) const
@@ -401,9 +431,13 @@ void ASH_BattleBoard::DrawPlacementGrid() const
 
 	for (int32 Y = 0; Y < Grid.Rows; ++Y)
 	{
-		for (int32 X = 0; X < AllyColumns && X < Grid.Columns; ++X)
+		for (int32 X = 0; X < Grid.Columns; ++X)
 		{
 			const FIntPoint Cell(X, Y);
+			if (!IsAllyCell(Cell))
+			{
+				continue;
+			}
 			const FVector2D Local = Grid.CellCenter(Cell);
 			if (Local.Size() > SafeRadius)
 			{
