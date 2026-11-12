@@ -10,6 +10,26 @@ class ALearningAgentsGymBase;
 class ASH_RLCharacter;
 class UCombatStatsComponent;
 
+/** Signed reward sums. Raw terms precede team mixing; applied terms sum to Total. */
+struct FSHRewardStats
+{
+	double DamageDealt = 0.0;
+	double DamageTaken = 0.0;
+	double Kill = 0.0;
+	double Miss = 0.0;
+	double Death = 0.0;
+	double Time = 0.0;
+	double See = 0.0;
+	double Align = 0.0;
+	double Approach = 0.0;
+	double IndividualApplied = 0.0;
+	double TeamApplied = 0.0;
+	double Outcome = 0.0;
+	double Clock = 0.0;
+	double Total = 0.0;
+	int64 Samples = 0;
+};
+
 /**
  *  보상의 순수 계산부. 월드도 에이전트도 없이 돌아가므로 자동화 테스트가 직접 부른다
  *  (RL/Tests/SH_RewardTests.cpp).
@@ -94,6 +114,22 @@ class HAI_PROJECT_TEAM5_API USH_ShooterTrainingEnv : public ULearningAgentsTrain
 	GENERATED_BODY()
 
 public:
+	/** Toggles alignment shaping only; combat rewards remain enabled. */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping")
+	bool bAimReward = true;
+
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping", meta = (ClampMin = "0.0"))
+	float AimRewardScale = 1.0f;
+
+	/** Visibility shaping is independent from alignment shaping. */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping")
+	bool bSeeReward = true;
+
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping", meta = (ClampMin = "0.0"))
+	float SeeRewardScale = 1.0f;
+
+	void ConsumeRewardStats(FSHRewardStats& OutStats);
+
 	//~ 개인 보상 — 제로섬 ------------------------------------------------------
 
 	/** 준 피해 100 당 보상. */
@@ -297,7 +333,7 @@ public:
 	void SetRewardStepCount(const int64 InCount) { RewardStepCount = FMath::Max<int64>(0, InCount); }
 
 	/** 전투 누산기만으로 결정되는 개인 보상 항. 생산 코드와 자동화 테스트가 같은 계산식을 공유한다. */
-	float CalculateCombatReward(const UCombatStatsComponent& Stats) const;
+	float CalculateCombatReward(const UCombatStatsComponent& Stats, FSHRewardStats* OutTerms = nullptr) const;
 
 protected:
 	ASH_RLCharacter* ResolveUnit(const int32 AgentId) const;
@@ -317,6 +353,7 @@ protected:
 	void RefreshFrameRewards();
 
 private:
+	FSHRewardStats RewardStats;
 	/** 지금까지 보상을 수집한 총 횟수. 셰이핑 감쇠의 분자다. */
 	int64 RewardStepCount = 0;
 

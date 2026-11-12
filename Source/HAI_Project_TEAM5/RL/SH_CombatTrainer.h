@@ -96,6 +96,29 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SH|RL|Training", meta = (ClampMin = "0"))
 	int32 Seed = 1234;
 
+	/** Fixed for a run. Applies to learner-controlled units (both teams in self-play). */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimExperiment")
+	bool bAimAssist = false;
+
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimExperiment", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float AimAssistStrength = 1.0f;
+
+	/** Alignment reward only. Visibility shaping has its own switch. */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimExperiment")
+	bool bAimReward = true;
+
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimExperiment", meta = (ClampMin = "0.0"))
+	float AimRewardScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimExperiment")
+	bool bSeeReward = true;
+
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimExperiment", meta = (ClampMin = "0.0"))
+	float SeeRewardScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = "SH|RL|AimExperiment")
+	FString ExperimentName;
+
 	/**
 	 *  정책이 갱신될 때마다 전 에이전트를 리셋할지(RunTraining 의 4번째 인자).
 	 *
@@ -290,6 +313,8 @@ protected:
 	bool ValidateUnitSchema(const TArray<ASH_RLCharacter*>& Units) const;
 
 	void Report(double RealElapsed);
+	void WriteExperimentSettings();
+	void ReportRewardStats(int64 AssistedDecisions, int64 LiveDecisions);
 
 	/**
 	 *  결정 직후 등록된 에이전트의 인코딩 관측 · 정책 메모리에서 NaN / ±∞ / |x| > 1e6 을 찾아 기록한다.
@@ -362,6 +387,8 @@ protected:
 
 
 private:
+	FString ExperimentDirectory;
+	bool bRewardLogWriteFailed = false;
 	FLearningAgentsCommunicator Communicator;
 
 	bool bAssembled = false;
