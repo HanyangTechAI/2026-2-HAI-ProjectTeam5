@@ -44,6 +44,32 @@ float USH_ShooterTrainingEnv::GetRoundClockCost() const
 	return OutcomeReward * GetRoundRewardScale() * (1.0f - FMath::Clamp(ClockDiscount, 0.0f, 1.0f));
 }
 
+float USH_ShooterTrainingEnv::CalculateCombatReward(const UCombatStatsComponent& Stats, FSHRewardStats* OutTerms) const
+{
+	const float Dealt = DamageDealtWeight * (Stats.DamageDealtAccum / 100.0f);
+	const float Taken = DamageTakenWeight * (Stats.DamageTakenAccum / 100.0f);
+	const float Kills = KillBonus * static_cast<float>(Stats.KillsAccum);
+	const int32 Missed = FMath::Max(0, Stats.ShotsFiredAccum - Stats.ShotsHitAccum);
+	const float MissPenalty = MissWeight * static_cast<float>(Missed);
+
+	float Reward = Dealt - Taken + Kills - MissPenalty;
+	if (Stats.bDiedThisInterval)
+	{
+		Reward -= DeathPenalty;
+	}
+
+	if (OutTerms)
+	{
+		OutTerms->DamageDealt = Dealt;
+		OutTerms->DamageTaken = -Taken;
+		OutTerms->Kill = Kills;
+		OutTerms->Miss = -MissPenalty;
+		OutTerms->Death = Stats.bDiedThisInterval ? -DeathPenalty : 0.0f;
+	}
+
+	return Reward;
+}
+
 float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit)
 {
 	++RewardStepCount;
@@ -64,30 +90,9 @@ float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit)
 	DamageDealtInterval += Stats->DamageDealtAccum;
 	++GathersInterval;
 
-	float Reward = 0.0f;
-	FSHRewardStats Terms;
-
 	// --- 전투 (제로섬) --------------------------------------------------------
-	const float Dealt = DamageDealtWeight * (Stats->DamageDealtAccum / 100.0f);
-	const float Taken = -DamageTakenWeight * (Stats->DamageTakenAccum / 100.0f);
-	const float Kills = KillBonus * static_cast<float>(Stats->KillsAccum);
-	Reward += Dealt;
-	Reward += Taken;
-	Reward += Kills;
-	Terms.DamageDealt = Dealt;
-	Terms.DamageTaken = Taken;
-	Terms.Kill = Kills;
-
-	const int32 Missed = FMath::Max(0, Stats->ShotsFiredAccum - Stats->ShotsHitAccum);
-	const float MissReward = -MissWeight * static_cast<float>(Missed);
-	Reward += MissReward;
-	Terms.Miss = MissReward;
-
-	if (Stats->bDiedThisInterval)
-	{
-		Reward -= DeathPenalty;
-		Terms.Death = -DeathPenalty;
-	}
+	FSHRewardStats Terms;
+	float Reward = CalculateCombatReward(*Stats, &Terms);
 
 	if (bAlive)
 	{

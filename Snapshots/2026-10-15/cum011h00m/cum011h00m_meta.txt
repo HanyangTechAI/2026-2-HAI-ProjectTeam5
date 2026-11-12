@@ -1,0 +1,13 @@
+label=final
+run=20261015-160046
+saved_at=2026-10-15 19:00:47
+cumulative_seconds=39611
+elapsed_seconds=10801
+decisions=120380
+agents=320
+selfplay=1
+outcome_reward=0.000
+team_spirit=0.300
+obs_size=176
+total_reward_steps=137489280
+resumed_from=C:/UnrealProjects/HAI_Project_TEAM5/Snapshots/2026-10-15/cum008h00m

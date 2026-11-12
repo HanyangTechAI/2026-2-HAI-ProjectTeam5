@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" font-family="Malgun Gothic, 'Apple SD Gothic Neo', sans-serif">
+<rect width="1600" height="900" fill="#ffffff"/>
+<rect x="150.0" y="150" width="295.8" height="630" fill="#f3ead9"/>
+<text x="150" y="62" font-size="38" font-weight="700" fill="#1d2633">학습한 정책 vs 스크립트 봇</text>
+<text x="150" y="104" font-size="24" fill="#5f6b78">봇과는 한 번도 학습하지 않았다 (자기 자신과만 학습) · 스냅샷마다 120라운드 · 띠 = 95% 신뢰구간</text>
+<text x="297.9" y="180" font-size="21" text-anchor="middle" fill="#8a5a12">버그 수정 전 측정</text>
+<line x1="150" y1="780.0" x2="1370" y2="780.0" stroke="#e3e7ec" stroke-width="1.5"/>
+<text x="136" y="788.0" font-size="22" text-anchor="end" fill="#5f6b78">0%</text>
+<line x1="150" y1="622.5" x2="1370" y2="622.5" stroke="#e3e7ec" stroke-width="1.5"/>
+<text x="136" y="630.5" font-size="22" text-anchor="end" fill="#5f6b78">25%</text>
+<line x1="150" y1="465.0" x2="1370" y2="465.0" stroke="#e3e7ec" stroke-width="1.5"/>
+<text x="136" y="473.0" font-size="22" text-anchor="end" fill="#5f6b78">50%</text>
+<line x1="150" y1="307.5" x2="1370" y2="307.5" stroke="#e3e7ec" stroke-width="1.5"/>
+<text x="136" y="315.5" font-size="22" text-anchor="end" fill="#5f6b78">75%</text>
+<line x1="150" y1="150.0" x2="1370" y2="150.0" stroke="#e3e7ec" stroke-width="1.5"/>
+<text x="136" y="158.0" font-size="22" text-anchor="end" fill="#5f6b78">100%</text>
+<line x1="150.0" y1="780" x2="150.0" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="150.0" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">0h</text>
+<line x1="297.9" y1="780" x2="297.9" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="297.9" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">2h</text>
+<line x1="445.8" y1="780" x2="445.8" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="445.8" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">4h</text>
+<line x1="593.6" y1="780" x2="593.6" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="593.6" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">6h</text>
+<line x1="741.5" y1="780" x2="741.5" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="741.5" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">8h</text>
+<line x1="889.4" y1="780" x2="889.4" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="889.4" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">10h</text>
+<line x1="1037.3" y1="780" x2="1037.3" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="1037.3" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">12h</text>
+<line x1="1185.2" y1="780" x2="1185.2" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="1185.2" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">14h</text>
+<line x1="1333.0" y1="780" x2="1333.0" y2="788" stroke="#5f6b78" stroke-width="1.5"/>
+<text x="1333.0" y="818" font-size="22" text-anchor="middle" fill="#5f6b78">16h</text>
+<line x1="150" y1="780" x2="1370" y2="780" stroke="#5f6b78" stroke-width="2"/>
+<text x="760.0" y="864" font-size="23" text-anchor="middle" fill="#1d2633">누적 학습 시간</text>
+<text transform="translate(52 465.0) rotate(-90)" font-size="23" text-anchor="middle" fill="#1d2633">승률</text>
+<line x1="150" y1="465.0" x2="1370" y2="465.0" stroke="#5f6b78" stroke-width="2" stroke-dasharray="4 6"/>
+<text x="1382" y="472.0" font-size="20" fill="#5f6b78">50%</text>
+<polygon points="174.6,760.5 199.3,720.9 223.9,720.9 248.6,525.2 273.2,315.6 297.9,339.8 322.5,461.1 347.2,419.7 371.8,379.3 396.5,291.9 421.1,250.5 445.8,241.5 519.7,268.7 593.6,186.6 667.6,277.9 741.5,215.4 815.5,171.5 889.4,186.6 963.3,164.6 1037.3,164.6 1111.2,155.4 1185.2,152.9 1259.1,150.0 1333.0,155.4 1333.0,194.7 1259.1,169.4 1185.2,187.0 1111.2,194.7 1037.3,216.0 963.3,216.0 889.4,255.0 815.5,229.4 741.5,297.5 667.6,377.4 593.6,255.0 519.7,366.3 445.8,332.4 421.1,343.8 396.5,393.9 371.8,489.7 347.2,530.6 322.5,570.6 297.9,447.8 273.2,421.1 248.6,628.7 223.9,768.7 199.3,768.7 174.6,780.0" fill="#2f6fb0" fill-opacity="0.13"/>
+<polyline points="174.6,780.0 199.3,753.8 223.9,753.8 248.6,580.5 273.2,365.2 297.9,391.5 322.5,517.5 347.2,475.5 371.8,433.5 396.5,339.0 421.1,291.8 445.8,281.2 519.7,312.8 593.6,213.0 667.6,323.2 741.5,249.8 815.5,192.0 889.4,213.0 963.3,181.5 1037.3,181.5 1111.2,165.8 1185.2,160.5 1259.1,150.0 1333.0,165.8" fill="none" stroke="#2f6fb0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="174.6" cy="780.0" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="199.3" cy="753.8" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="223.9" cy="753.8" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="248.6" cy="580.5" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="273.2" cy="365.2" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="297.9" cy="391.5" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="322.5" cy="517.5" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="347.2" cy="475.5" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="371.8" cy="433.5" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="396.5" cy="339.0" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="421.1" cy="291.8" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="445.8" cy="281.2" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="519.7" cy="312.8" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="593.6" cy="213.0" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="667.6" cy="323.2" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="741.5" cy="249.8" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="815.5" cy="192.0" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="889.4" cy="213.0" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="963.3" cy="181.5" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="1037.3" cy="181.5" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="1111.2" cy="165.8" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="1185.2" cy="160.5" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="1259.1" cy="150.0" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<circle cx="1333.0" cy="165.8" r="7" fill="#ffffff" stroke="#2f6fb0" stroke-width="3.5"/>
+<text x="1340.4" y="216.1" font-size="24" text-anchor="start" font-weight="700" fill="#2f6fb0">97.5%</text>
+</svg>

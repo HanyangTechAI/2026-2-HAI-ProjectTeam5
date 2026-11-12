@@ -317,6 +317,12 @@ void ASH_Arena::ResetRound()
 			}
 		}
 	}
+
+	// 진영 교대. 슬롯 배치(HandlePostGymReset → ApplySpawnSlots) 전에 뒤집어야 이번 라운드에 적용된다.
+	if (bAlternateSides)
+	{
+		bSidesSwapped = !bSidesSwapped;
+	}
 	HandlePostGymReset();
 }
 
@@ -345,6 +351,7 @@ void ASH_Arena::EndRound(ESHRoundEnd End)
 	Record.End = End;
 	Record.Duration = GetRoundElapsed();
 	Record.FirstDamageTime = FirstDamageTime;
+	Record.bSidesSwapped = AreSidesSwapped();   // 진영별 승수는 실제로 스폰된 진영 기준이어야 한다
 
 	// 리포트가 돌지 않는 환경(에디터 미리보기 등)에서 무한히 쌓이지 않게.
 	if (PendingRoundRecords.Num() < 4096)
@@ -623,7 +630,10 @@ void ASH_Arena::ApplySpawnSlots()
 		for (int32 Index = 0; Index < Units.Num() && Index < Slots.Num(); ++Index)
 		{
 			ABase_Character* Unit = Units[Index];
-			const FTransform& Slot = Slots[Index];
+
+			// 유닛별 위치를 정하는 자식(인게임 보드)이면 슬롯 대신 그 값을 쓴다. 헤더 주석 참조.
+			FTransform CustomTransform;
+			const FTransform& Slot = GetSpawnTransformForUnit(Unit, Team, CustomTransform) ? CustomTransform : Slots[Index];
 
 			// TeleportPhysics — 보간 없이 즉시 옮긴다. 안 그러면 캡슐이 이전 위치에서
 			// 새 위치까지 쓸고 지나가면서 도중의 벽/유닛과 충돌한다.
@@ -687,7 +697,8 @@ FTransform ASH_Arena::GetSpawnTransformForSlot(int32 Team, int32 SlotIndex, int3
 	const int32 Slot = FMath::Clamp(SlotIndex, 0, Count - 1);
 
 	// 팀 0 은 -X 쪽, 팀 1 은 +X 쪽. 호의 중심을 기준으로 좌우 대칭 배치.
-	const int32 SpawnSideTeam = bSwapSpawnSidesForEvaluation ? 1 - Team : Team;
+	// 진영 교대(bAlternateSides)로 뒤집힌 라운드거나 진단용 교환(-SHSwapSpawnSides=1)이 켜져 있으면 반대다.
+	const int32 SpawnSideTeam = AreSidesSwapped() ? 1 - Team : Team;
 	const float BaseAngleDeg = (SpawnSideTeam == 0) ? 180.0f : 0.0f;
 	const float Offset = (static_cast<float>(Slot) - 0.5f * static_cast<float>(Count - 1)) * ArcStepDegrees;
 
