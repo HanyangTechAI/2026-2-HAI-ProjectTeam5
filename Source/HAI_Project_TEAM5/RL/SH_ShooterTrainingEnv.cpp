@@ -2,11 +2,51 @@
 
 #include "SH_ShooterTrainingEnv.h"
 
+#include "Base_Character.h"
 #include "Combat/CombatStatsComponent.h"
 #include "LearningAgentsGym.h"
 #include "SH_Arena.h"
 #include "SH_RLCharacter.h"
 #include "SH_VisionComponent.h"
+
+namespace
+{
+	/**
+	 *  같은 아레나의 **살아 있는** 적 중 가장 가까운 것까지의 평면 거리(cm). 없으면 음수.
+	 *
+	 *  ★★ 가시성을 일부러 보지 않는다. 시야로 재면 엄폐물 뒤로 들어가는 순간 거리가
+	 *  "안 보임" 으로 끊기고, 접근 보상이 **엄폐에 대한 벌점**이 된다 — 고치려는 문제를 키운다.
+	 *  ASH_CombatTrainer 의 "최근접 적" 지표와 같은 계산이라 로그와 보상이 같은 수를 본다.
+	 *
+	 *  ★ Z 를 뺀 평면 거리다. 아레나 바닥이 평면이고 유닛 높이가 같아서 Z 차이는 캡슐
+	 *  정렬 오차뿐이다.
+	 */
+	float NearestLivingEnemyDistance(const ASH_RLCharacter* Unit)
+	{
+		const UCombatStatsComponent* Stats = Unit ? Unit->CombatStats.Get() : nullptr;
+		const ASH_Arena* Arena = Unit ? Cast<ASH_Arena>(Unit->CachedGym.Get()) : nullptr;
+		if (!Stats || !Arena)
+		{
+			return -1.0f;
+		}
+
+		const int32 Other = 1 - static_cast<int32>(Stats->TeamId);
+		const FVector MyLocation = Unit->GetActorLocation();
+
+		float BestSq = TNumericLimits<float>::Max();
+		for (const TWeakObjectPtr<ABase_Character>& Weak : Arena->GetTeamUnits(Other))
+		{
+			const ABase_Character* Enemy = Weak.Get();
+			if (Enemy && Enemy->bEntityEnabled && Enemy->CombatStats && Enemy->CombatStats->IsAlive())
+			{
+				BestSq = FMath::Min(BestSq, static_cast<float>(
+					FVector::DistSquaredXY(MyLocation, Enemy->GetActorLocation())));
+			}
+		}
+
+		return BestSq < TNumericLimits<float>::Max() ? FMath::Sqrt(BestSq) : -1.0f;
+	}
+}
 
 ASH_RLCharacter* USH_ShooterTrainingEnv::ResolveUnit(const int32 AgentId) const
 {
@@ -59,7 +99,7 @@ float USH_ShooterTrainingEnv::CalculateCombatReward(const UCombatStatsComponent&
 	return Reward;
 }
 
-float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit)
+float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit, const int32 AgentId)
 {
 	++RewardStepCount;
 
@@ -86,6 +126,24 @@ float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit)
 	{
 		Reward -= TimePenalty;
 
+		// --- 접근 (감쇠하지 않음) ---------------------------------------------
+		// ★ 차분이므로 **직전 거리가 있을 때만** 준다. 라운드 첫 결정은 0 이다.
+		const float NearestDist = NearestLivingEnemyDistance(Unit);
+		if (NearestDist >= 0.0f)
+		{
+			if (const float* PrevDist = LastEnemyDistance.Find(AgentId))
+			{
+				Reward += SHReward::Approach(*PrevDist, NearestDist,
+					ApproachWeight, EngageRangeCm, ApproachMaxStepCm);
+			}
+			LastEnemyDistance.Add(AgentId, NearestDist);
+		}
+		else
+		{
+			// 적이 전멸했다. 다음 라운드의 첫 결정이 점프하지 않도록 기준을 버린다.
+			LastEnemyDistance.Remove(AgentId);
+		}
+
 		// --- 셰이핑 -----------------------------------------------------------
 		const float ShapingScale = GetShapingScale();
 		if (ShapingScale > 0.0f)
@@ -97,15 +155,25 @@ float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit)
 
 				if (Vision->IsHostileVisible())
 				{
-					Reward += ShapingScale * SeeWeight;
+					// ★ 거리로 가중한다 — SHReward::Proximity 주석 참조.
+					//   보이는 적까지의 거리를 쓴다(조준이 걸려 있는 그 적이다).
+					const float VisibleDist = Vision->GetHostileDepth01() * Vision->MaxRange;
+					const float NearWeight = SHReward::Proximity(VisibleDist, EngageRangeCm);
+
+					Reward += ShapingScale * NearWeight * SeeWeight;
 
 					const float HalfFov = FMath::Max(0.5f * Vision->FOVDegrees, KINDA_SMALL_NUMBER);
 					const float Alignment = 1.0f - FMath::Abs(Vision->GetHostileAngleDeg()) / HalfFov;
-					Reward += ShapingScale * AlignWeight
+					Reward += ShapingScale * NearWeight * AlignWeight
 						* FMath::Pow(FMath::Max(Alignment, 0.0f), 4.0f);
 				}
 			}
 		}
+	}
+	else
+	{
+		// 죽은 유닛. 되살아난 뒤 첫 결정이 점프하지 않도록 기준을 버린다.
+		LastEnemyDistance.Remove(AgentId);
 	}
 
 	// ★ 반드시 비운다. 안 비우면 같은 피해가 다음 스텝에 또 들어간다.
@@ -139,7 +207,7 @@ void USH_ShooterTrainingEnv::RefreshFrameRewards()
 	for (int32 Index = 0; Index < AllAgents.Num(); ++Index)
 	{
 		ASH_RLCharacter* Unit = Cast<ASH_RLCharacter>(AllAgents[Index]);
-		const float Reward = ComputeIndividualReward(Unit);
+		const float Reward = ComputeIndividualReward(Unit, AllAgentIds[Index]);
 		IndividualRewards.Add(AllAgentIds[Index], Reward);
 
 		if (Unit && Unit->CombatStats)
@@ -236,6 +304,11 @@ void USH_ShooterTrainingEnv::ConsumeDamageStats(
 
 void USH_ShooterTrainingEnv::ResetAgentEpisode_Implementation(const int32 AgentId)
 {
+	// ★ 스폰 슬롯으로 순간이동하기 전에 접근 보상의 기준 거리를 버린다.
+	//   남겨 두면 그 순간이동이 그대로 접근 보상이 된다.
+	//   ★ 아래 null 검사보다 **먼저** 한다 — 폰을 못 찾는 경우에도 낡은 기준은 버려야 한다.
+	LastEnemyDistance.Remove(AgentId);
+
 	ASH_RLCharacter* Unit = ResolveUnit(AgentId);
 	if (!Unit)
 	{

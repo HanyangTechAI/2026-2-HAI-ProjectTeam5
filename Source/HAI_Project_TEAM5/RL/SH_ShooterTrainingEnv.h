@@ -11,6 +11,67 @@ class ASH_RLCharacter;
 class UCombatStatsComponent;
 
 /**
+ *  보상의 순수 계산부. 월드도 에이전트도 없이 돌아가므로 자동화 테스트가 직접 부른다
+ *  (RL/Tests/SH_RewardTests.cpp).
+ */
+namespace SHReward
+{
+	/**
+	 *  접근 보상. 직전 결정보다 가까워졌으면 양수, 멀어졌으면 같은 크기의 음수다.
+	 *
+	 *  ★ 왕복이 정확히 상쇄된다 — 붙었다 떨어졌다를 반복해서 농사지을 수 없다.
+	 *  한 라운드 전체의 합은 Weight x (시작 거리 − 끝 거리) / RangeCm 하나로 접히므로
+	 *  "시작할 때보다 붙어서 끝내라" 는 **한 번의 편향**으로만 작동하고 크기도 Weight 로 묶인다.
+	 *
+	 *  ★ 퍼텐셜 기반 셰이핑(γΦ' − Φ)을 쓰지 않은 이유. γ = 0.99 면 Φ 가 0 이 아닌 상태에
+	 *  머무는 것만으로 매 스텝 (1 − γ)|Φ| 가 새어 나온다. 거리에 비례하는 Φ 로는 그 누수가
+	 *  **가만히 멀리 서 있는 것에 대한 보상**이 되어 고치려는 문제를 그대로 되살린다.
+	 *  γ = 1 의 차분은 누수가 없고, 정지 상태의 보상이 정확히 0 이다.
+	 */
+	inline float Approach(const float PrevDistCm, const float DistCm,
+		const float Weight, const float RangeCm, const float MaxStepCm)
+	{
+		if (RangeCm <= KINDA_SMALL_NUMBER)
+		{
+			return 0.0f;
+		}
+
+		const float Delta = PrevDistCm - DistCm;
+
+		// ★★ 텔레포트 방호. 결정 하나 사이에 **걸어서** 변할 수 있는 거리에는 상한이 있다
+		//  (양쪽이 마주 달려도 2 x MaxWalkSpeed x 결정 주기 = 2 x 500 x 0.05 = 50 cm).
+		//  그보다 큰 변화는 이동이 아니라 스폰 슬롯 재배치 · 풀 재사용 · 표적이 다른 적으로
+		//  바뀐 것이고, 그대로 주면 **한 결정에 Weight 수십 배가 꽂혀 정책이 망가진다.**
+		//  돌려볼 수 없는 변경이라 이 경로는 조용히 0 으로 만든다 — 보상을 놓치는 쪽이
+		//  거짓 보상을 주는 쪽보다 안전하다.
+		if (MaxStepCm > 0.0f && FMath::Abs(Delta) > MaxStepCm)
+		{
+			return 0.0f;
+		}
+
+		return Weight * Delta / RangeCm;
+	}
+
+	/**
+	 *  셰이핑 근접 가중. 붙으면 1, RangeCm 이상 떨어지면 0.
+	 *
+	 *  ★★ 왜 필요한가 — 멀어지려는 경향의 **원인**이다. SeeWeight / AlignWeight 는 거리를
+	 *  전혀 보지 않는데 AGun::Range 와 USH_VisionComponent::MaxRange 가 둘 다 6000 cm 라
+	 *  아레나 지름(3500)보다 넓다. 그래서 반대편 벽에 붙어 **맞출 수 없는 거리에서도 셰이핑을
+	 *  전액 수확**할 수 있었다. 명중은 적 캡슐의 각 크기(2400 cm 에서 약 2도)를 따라 거리에
+	 *  반비례해 줄어드는데 셰이핑만 줄지 않으니, 벽에 붙어 조준만 하는 쪽이 밀고 들어가는 것보다
+	 *  기대값이 높았다. ppo.py 의 MinimumAdvantage = 0.0 이 받은 피해 벌점을 잘라 내므로
+	 *  반대 방향으로 끌어당길 신호도 없었다.
+	 */
+	inline float Proximity(const float DistCm, const float RangeCm)
+	{
+		return RangeCm > KINDA_SMALL_NUMBER
+			? FMath::Clamp(1.0f - DistCm / RangeCm, 0.0f, 1.0f)
+			: 1.0f;
+	}
+}
+
+/**
  *  보상 · 완료 · 리셋. **라운드 단위**다 (2026-10-02 개편).
  *
  *  라운드 = 한 팀이 전멸하거나 ASH_Arena::RoundTimeLimitSeconds 가 지날 때까지.
@@ -164,6 +225,42 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SH|Reward|Shaping", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ShapingFloor = 0.15f;
 
+	//~ 접근 — **감쇠하지 않는다** ----------------------------------------------
+
+	/**
+	 *  접근 보상 가중치. 매 결정에 Weight x (직전 거리 − 지금 거리) / EngageRangeCm 을 준다.
+	 *
+	 *  ★ 크기의 근거. MaxWalkSpeed 500 cm/s, 결정 주기 0.05 초면 결정당 최대 25 cm 다.
+	 *  Weight 1.0 / EngageRange 3500 이면 전속 접근이 결정당 0.0071 — 셰이핑 하한
+	 *  (0.0105) 과 같은 자릿수이고 시계 비용(0.02)보다 작다. 스폰 거리 2400 에서 교전
+	 *  거리까지 1800 cm 를 좁히면 총 0.51 로 킬 보너스 한 번(0.5)과 맞먹는다.
+	 *
+	 *  ★ 셰이핑과 달리 **감쇠시키지 않는다.** 왕복이 상쇄되는 차분이라 농사지을 수 없고
+	 *  라운드 합이 Weight 로 묶여 있어서, 남겨 둬도 최종 정책을 왜곡하는 크기가 아니다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Approach", meta = (ClampMin = "0.0"))
+	float ApproachWeight = 1.0f;
+
+	/**
+	 *  거리 정규화 기준(cm). 접근 보상과 셰이핑 근접 가중이 같이 쓴다.
+	 *
+	 *  ★ 아레나 지름(2 x ASH_Arena::ArenaRadius = 3500)으로 둔다. 이보다 멀어질 수 없으므로
+	 *  근접 가중이 0 이 되는 지점이 곧 "아레나 반대편" 이다. 사거리(6000)로 두면
+	 *  아레나 안 어디서든 가중이 0.42 아래로 내려가지 않아 수확이 그대로 남는다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Approach", meta = (ClampMin = "1.0"))
+	float EngageRangeCm = 3500.0f;
+
+	/**
+	 *  결정 하나에 인정하는 거리 변화의 상한(cm). 넘으면 그 결정의 접근 보상은 0 이다.
+	 *
+	 *  ★ 근거: 양쪽이 마주 달려도 2 x MaxWalkSpeed(500) x 결정 주기(0.05) = 50 cm 다.
+	 *  100 은 그 두 배 — 걷기로 닿을 수 없는 변화만 걸러낸다. 0 이면 방호를 끈다.
+	 *  SHReward::Approach 주석 참조.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|Reward|Approach", meta = (ClampMin = "0.0"))
+	float ApproachMaxStepCm = 100.0f;
+
 	//~ ULearningAgentsTrainingEnvironment ------------------------------------
 
 	virtual void GatherAgentReward_Implementation(float& OutReward, const int32 AgentId) override;
@@ -209,7 +306,7 @@ protected:
 	 *  유닛 하나의 개인 보상을 계산하고 그 유닛의 보상 누산기를 **비운다**.
 	 *  ★ 누산기를 비우므로 프레임당 유닛마다 정확히 한 번만 불려야 한다.
 	 */
-	float ComputeIndividualReward(ASH_RLCharacter* Unit);
+	float ComputeIndividualReward(ASH_RLCharacter* Unit, int32 AgentId);
 
 	/**
 	 *  이번 프레임의 개인 보상과 팀별 합을 한 번에 계산해 캐시한다.
@@ -233,6 +330,18 @@ private:
 	 *  라운드가 끝나면 아레나의 에이전트 전원이 같은 프레임에 ResetAgentEpisode 를 부른다. */
 	uint64 LastResetFrame = 0;
 	TSet<TObjectPtr<ALearningAgentsGymBase>> GymsResetThisFrame;
+
+	/**
+	 *  유닛별 **직전 결정의 최근접 적 거리**(cm). 접근 보상의 차분 기준이다.
+	 *
+	 *  ★ 라운드 리셋에서 반드시 지운다(ResetAgentEpisode). 안 지우면 스폰 지점으로
+	 *  순간이동한 거리 변화가 그대로 접근 보상이 되어 한 결정에 Weight 만큼이 꽂힌다.
+	 *
+	 *  ★ 키가 폰 포인터가 아니라 **에이전트 ID** 다. 폰은 풀이 재사용하지만 ID ↔ 폰 대응은
+	 *  AddAgent 이후 고정이고, 이 헤더에는 ASH_RLCharacter 의 전방 선언밖에 없어서
+	 *  TWeakObjectPtr<ASH_RLCharacter> 를 여기서 인스턴스화하면 완전한 타입을 요구한다.
+	 */
+	TMap<int32, float> LastEnemyDistance;
 
 	/** 구간 누적 피해량. ConsumeDamageStats 가 비운다. */
 	double DamageTakenInterval = 0.0;
