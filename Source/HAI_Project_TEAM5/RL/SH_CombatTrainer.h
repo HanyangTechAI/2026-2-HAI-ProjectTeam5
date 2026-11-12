@@ -428,6 +428,10 @@ private:
 	/** 커맨드라인 오버라이드(조립 때 아레나·환경에 적용). 음수 = 지정 안 됨. */
 	int32 RoundRulesOverride = -1;
 	float RoundTimeOverride = -1.0f;
+	/** -SHApproach= 로 받은 접근 보상 가중치. 음수면 지정 안 함(환경 기본값을 쓴다).
+	 *  ★ A/B 의 손잡이다 — 0 이 대조군(수정 전과 같다), 1 이 처치군이다. */
+	float ApproachOverride = -1.0f;
+
 	float TeamSpiritOverride = -1.0f;
 	float OutcomeOverride = -1.0f;
 	int32 RoundRampOverride = -1;

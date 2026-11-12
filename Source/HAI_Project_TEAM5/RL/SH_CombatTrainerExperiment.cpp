@@ -125,6 +125,9 @@ void ASH_CombatTrainer::WriteExperimentSettings()
 	Rewards->SetNumberField(TEXT("align_weight"), Env->AlignWeight);
 	Rewards->SetNumberField(TEXT("effective_see_weight"), bSeeReward ? Env->SeeWeight * SeeRewardScale : 0.0f);
 	Rewards->SetNumberField(TEXT("effective_align_weight"), bAimReward ? Env->AlignWeight * AimRewardScale : 0.0f);
+	Rewards->SetNumberField(TEXT("approach_weight"), Env->ApproachWeight);
+	Rewards->SetNumberField(TEXT("engage_range_cm"), Env->EngageRangeCm);
+	Rewards->SetNumberField(TEXT("approach_max_step_cm"), Env->ApproachMaxStepCm);
 	Rewards->SetNumberField(TEXT("shaping_decay_steps"), Env->ShapingDecaySteps);
 	Rewards->SetNumberField(TEXT("shaping_floor"), Env->ShapingFloor);
 	Rewards->SetNumberField(TEXT("outcome_reward"), Env->OutcomeReward);
@@ -183,10 +186,10 @@ void ASH_CombatTrainer::ReportRewardStats(int64 AssistedDecisions, int64 LiveDec
 	if (Stats.Samples == 0) { return; }
 	const double PerK = 1000.0 / Stats.Samples;
 	UE_LOG(LogTemp, Display,
-		TEXT("[SH_Rewards] raw/1k: dealt=%.3f taken=%.3f kill=%.3f miss=%.3f death=%.3f time=%.3f see=%.3f align=%.3f | ")
+		TEXT("[SH_Rewards] raw/1k: dealt=%.3f taken=%.3f kill=%.3f miss=%.3f death=%.3f time=%.3f see=%.3f align=%.3f approach=%.3f | ")
 		TEXT("applied/1k: individual=%.3f team=%.3f outcome=%.3f clock=%.3f total=%.3f | samples=%lld assist=%lld/%lld"),
 		Stats.DamageDealt * PerK, Stats.DamageTaken * PerK, Stats.Kill * PerK, Stats.Miss * PerK,
-		Stats.Death * PerK, Stats.Time * PerK, Stats.See * PerK, Stats.Align * PerK,
+		Stats.Death * PerK, Stats.Time * PerK, Stats.See * PerK, Stats.Align * PerK, Stats.Approach * PerK,
 		Stats.IndividualApplied * PerK, Stats.TeamApplied * PerK, Stats.Outcome * PerK,
 		Stats.Clock * PerK, Stats.Total * PerK, Stats.Samples, AssistedDecisions, LiveDecisions);
 	if (ExperimentDirectory.IsEmpty()) { return; }
@@ -194,13 +197,13 @@ void ASH_CombatTrainer::ReportRewardStats(int64 AssistedDecisions, int64 LiveDec
 	FString Row;
 	if (!FPaths::FileExists(Path))
 	{
-		Row = TEXT("elapsed_seconds,decisions,samples,raw_damage_dealt,raw_damage_taken,raw_kill,raw_miss,raw_death,raw_time,raw_see,raw_align,individual_applied,team_applied,outcome,clock,total,assisted_decisions,live_decisions\n");
+		Row = TEXT("elapsed_seconds,decisions,samples,raw_damage_dealt,raw_damage_taken,raw_kill,raw_miss,raw_death,raw_time,raw_see,raw_align,individual_applied,team_applied,outcome,clock,total,assisted_decisions,live_decisions,raw_approach\n");
 	}
-	Row += FString::Printf(TEXT("%.6f,%d,%lld,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%lld,%lld\n"),
+	Row += FString::Printf(TEXT("%.6f,%d,%lld,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%lld,%lld,%.9f\n"),
 		FPlatformTime::Seconds() - StartRealTime, DecisionCount, Stats.Samples,
 		Stats.DamageDealt, Stats.DamageTaken, Stats.Kill, Stats.Miss, Stats.Death, Stats.Time, Stats.See,
 		Stats.Align, Stats.IndividualApplied, Stats.TeamApplied, Stats.Outcome, Stats.Clock, Stats.Total,
-		AssistedDecisions, LiveDecisions);
+		AssistedDecisions, LiveDecisions, Stats.Approach);
 	if (!FFileHelper::SaveStringToFile(Row, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,
 		&IFileManager::Get(), FILEWRITE_Append) && !bRewardLogWriteFailed)
 	{
