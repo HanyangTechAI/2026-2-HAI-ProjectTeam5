@@ -8,6 +8,7 @@
 
 class ALearningAgentsGymBase;
 class ASH_RLCharacter;
+class UCombatStatsComponent;
 
 /**
  *  보상 · 완료 · 리셋. **라운드 단위**다 (2026-10-02 개편).
@@ -197,6 +198,9 @@ public:
 
 	/** 이어서 학습할 때 복원한다(ASH_CombatTrainer -SHResume). 안 하면 셰이핑이 1.0, 램프가 0 으로 돌아간다. */
 	void SetRewardStepCount(const int64 InCount) { RewardStepCount = FMath::Max<int64>(0, InCount); }
+
+	/** 전투 누산기만으로 결정되는 개인 보상 항. 생산 코드와 자동화 테스트가 같은 계산식을 공유한다. */
+	float CalculateCombatReward(const UCombatStatsComponent& Stats) const;
 
 protected:
 	ASH_RLCharacter* ResolveUnit(const int32 AgentId) const;

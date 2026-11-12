@@ -8,6 +8,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Gun.h"
 #include "Misc/AutomationTest.h"
+#include "RL/SH_ShooterTrainingEnv.h"
 
 namespace
 {
@@ -185,6 +186,112 @@ namespace
 			Test.TestEqual(FString::Printf(TEXT("%s: shot %d hostile hit"), Context, Index), Actual.bShotHitHostile[Index], Expected.bShotHitHostile[Index]);
 		}
 	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTwoShootersSingleTargetRewardCreditTest,
+	"HAI.Combat.BatchResolution.TwoShootersSingleTargetRewardCredit",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+
+bool FTwoShootersSingleTargetRewardCreditTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = GWorld;
+	if (!TestNotNull(TEXT("Active Unreal world"), World))
+	{
+		return false;
+	}
+
+	USH_ShooterTrainingEnv* RewardEnv = NewObject<USH_ShooterTrainingEnv>();
+	if (!TestNotNull(TEXT("Production reward environment"), RewardEnv))
+	{
+		return false;
+	}
+
+	const FVector Origin(140000.0f, 100000.0f, 1000.0f);
+	auto RunCase = [this, World, RewardEnv, Origin](
+		const float TargetHealth, const TArray<int32>& ResolveOrder, const FVector& Offset,
+		FCombatResolutionSnapshot& OutSnapshot, TArray<float>& OutRewards) -> bool
+	{
+		TArray<FCombatShotFixture> Fixtures;
+		Fixtures.SetNum(3);
+		const FVector CaseOrigin = Origin + Offset;
+		if (!SpawnCombatShotFixture(*this, World, CaseOrigin + FVector(0.0f, -75.0f, 0.0f), 0.0f, 0, 100.0f, 10.0f, Fixtures[0])
+			|| !SpawnCombatShotFixture(*this, World, CaseOrigin + FVector(0.0f, 75.0f, 0.0f), 0.0f, 0, 100.0f, 10.0f, Fixtures[1])
+			|| !SpawnCombatShotFixture(*this, World, CaseOrigin + FVector(500.0f, 0.0f, 0.0f), 0.0f, 1, TargetHealth, 10.0f, Fixtures[2]))
+		{
+			DestroyCombatShotFixtures(World, Fixtures);
+			return false;
+		}
+		Fixtures[2].Unit->GetCapsuleComponent()->SetCapsuleSize(160.0f, 200.0f);
+
+		TArray<FCombatShotFixture> Shooters = { Fixtures[0], Fixtures[1] };
+		TArray<AActor*> ExpectedTargets = { Fixtures[2].Unit, Fixtures[2].Unit };
+		TArray<FGunFireResult> Shots;
+		PrepareShots(*this, Shooters, ExpectedTargets, Shots);
+		ResolveShotsInOrder(Shooters, Shots, ResolveOrder);
+		OutSnapshot = CaptureCombatResolution(Fixtures, Shots);
+		OutRewards = {
+			RewardEnv->CalculateCombatReward(*Fixtures[0].Unit->CombatStats),
+			RewardEnv->CalculateCombatReward(*Fixtures[1].Unit->CombatStats)
+		};
+		DestroyCombatShotFixtures(World, Fixtures);
+		return true;
+	};
+
+	FCombatResolutionSnapshot UnderkillForward, UnderkillReverse;
+	TArray<float> UnderkillForwardRewards, UnderkillReverseRewards;
+	TestTrue(TEXT("Run underkill forward"), RunCase(25.0f, { 0, 1 }, FVector::ZeroVector,
+		UnderkillForward, UnderkillForwardRewards));
+	TestTrue(TEXT("Run underkill reverse"), RunCase(25.0f, { 1, 0 }, FVector(10000.0f, 0.0f, 0.0f),
+		UnderkillReverse, UnderkillReverseRewards));
+	for (int32 ShooterIndex = 0; ShooterIndex < 2; ++ShooterIndex)
+	{
+		TestEqual(TEXT("Underkill gives each shooter full damage"), UnderkillForward.DamageDealt[ShooterIndex], 10.0f);
+		TestEqual(TEXT("Underkill gives no kill"), UnderkillForward.Kills[ShooterIndex], 0);
+		TestEqual(TEXT("Underkill production combat reward"), UnderkillForwardRewards[ShooterIndex], 0.1f);
+		TestEqual(TEXT("Underkill damage is order invariant"), UnderkillReverse.DamageDealt[ShooterIndex], UnderkillForward.DamageDealt[ShooterIndex]);
+		TestEqual(TEXT("Underkill reward is order invariant"), UnderkillReverseRewards[ShooterIndex], UnderkillForwardRewards[ShooterIndex]);
+	}
+
+	FCombatResolutionSnapshot OverkillForward, OverkillReverse;
+	TArray<float> OverkillForwardRewards, OverkillReverseRewards;
+	TestTrue(TEXT("Run overkill forward"), RunCase(15.0f, { 0, 1 }, FVector(20000.0f, 0.0f, 0.0f),
+		OverkillForward, OverkillForwardRewards));
+	TestTrue(TEXT("Run overkill reverse"), RunCase(15.0f, { 1, 0 }, FVector(30000.0f, 0.0f, 0.0f),
+		OverkillReverse, OverkillReverseRewards));
+
+	TestEqual(TEXT("Forward first shooter damage"), OverkillForward.DamageDealt[0], 10.0f);
+	TestEqual(TEXT("Forward lethal shooter remaining damage"), OverkillForward.DamageDealt[1], 5.0f);
+	TestEqual(TEXT("Forward lethal shooter kill"), OverkillForward.Kills[1], 1);
+	TestEqual(TEXT("Forward first shooter production combat reward"), OverkillForwardRewards[0], 0.1f);
+	TestEqual(TEXT("Forward lethal shooter production combat reward"), OverkillForwardRewards[1], 0.55f);
+	TestEqual(TEXT("Reverse lethal shooter remaining damage"), OverkillReverse.DamageDealt[0], 5.0f);
+	TestEqual(TEXT("Reverse first shooter damage"), OverkillReverse.DamageDealt[1], 10.0f);
+	TestEqual(TEXT("Reverse lethal shooter kill"), OverkillReverse.Kills[0], 1);
+	TestEqual(TEXT("Reverse lethal shooter production combat reward"), OverkillReverseRewards[0], 0.55f);
+	TestEqual(TEXT("Reverse first shooter production combat reward"), OverkillReverseRewards[1], 0.1f);
+	TestEqual(TEXT("Overkill team damage is order invariant"),
+		OverkillForward.DamageDealt[0] + OverkillForward.DamageDealt[1],
+		OverkillReverse.DamageDealt[0] + OverkillReverse.DamageDealt[1]);
+	TestEqual(TEXT("Overkill team kill count is order invariant"),
+		OverkillForward.Kills[0] + OverkillForward.Kills[1],
+		OverkillReverse.Kills[0] + OverkillReverse.Kills[1]);
+	TestEqual(TEXT("Overkill team combat reward is order invariant"),
+		OverkillForwardRewards[0] + OverkillForwardRewards[1],
+		OverkillReverseRewards[0] + OverkillReverseRewards[1]);
+	TestNotEqual(TEXT("Shooter 0 production reward changes with order"),
+		OverkillForwardRewards[0], OverkillReverseRewards[0]);
+
+	UCombatStatsComponent* StandaloneStats = NewObject<UCombatStatsComponent>();
+	StandaloneStats->DamageDealtAccum = 10.0f;
+	StandaloneStats->ShotsFiredAccum = 1;
+	StandaloneStats->ShotsHitAccum = 1;
+	TestEqual(TEXT("Standalone nonlethal production combat reward"),
+		RewardEnv->CalculateCombatReward(*StandaloneStats), 0.1f);
+	StandaloneStats->KillsAccum = 1;
+	TestEqual(TEXT("Standalone lethal production combat reward"),
+		RewardEnv->CalculateCombatReward(*StandaloneStats), 0.6f);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
