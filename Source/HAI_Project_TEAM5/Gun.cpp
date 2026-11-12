@@ -106,7 +106,7 @@ bool AGun::GetAimOriginAndDirection(FVector& OutOrigin, FVector& OutDirection) c
 	return true;
 }
 
-FGunFireResult AGun::PullTrigger()
+FGunFireResult AGun::PrepareShot()
 {
 	FGunFireResult Result;
 
@@ -153,6 +153,17 @@ FGunFireResult AGun::PullTrigger()
 	Result.ImpactPoint = Result.bHitSomething ? Hit.ImpactPoint : EndLocation;
 	Result.HitActor = Result.bHitSomething ? Hit.GetActor() : nullptr;
 
+	return Result;
+}
+
+void AGun::ResolveShot(FGunFireResult& Result)
+{
+	if (!Result.bFired)
+	{
+		return;
+	}
+
+	AActor* const OwnerActor = GetOwner();
 	if (Result.bHitSomething && Result.HitActor && !IsSameGymAsOwner(Result.HitActor))
 	{
 		// ★ 다른 아레나의 유닛을 맞혔다. 데미지를 주지 않고 크게 기록한다 —
@@ -186,13 +197,27 @@ FGunFireResult AGun::PullTrigger()
 	{
 		const FColor LineColor = Result.bHitHostile ? FColor::Red
 			: (Result.bHitSomething ? FColor::Yellow : FColor(90, 90, 100));
-		DrawDebugLine(World, Origin, Result.ImpactPoint, LineColor, false, DebugTraceDuration, 0, 1.5f);
-		if (Result.bHitSomething)
+		if (UWorld* World = GetWorld())
 		{
-			DrawDebugPoint(World, Result.ImpactPoint, 8.0f, LineColor, false, DebugTraceDuration);
+			FVector TraceStart;
+			FVector TraceDirection;
+			if (GetAimOriginAndDirection(TraceStart, TraceDirection))
+			{
+				DrawDebugLine(World, TraceStart, Result.ImpactPoint, LineColor, false, DebugTraceDuration, 0, 1.5f);
+				if (Result.bHitSomething)
+				{
+					DrawDebugPoint(World, Result.ImpactPoint, 8.0f, LineColor, false, DebugTraceDuration);
+				}
+			}
 		}
 	}
 #endif
 
+}
+
+FGunFireResult AGun::PullTrigger()
+{
+	FGunFireResult Result = PrepareShot();
+	ResolveShot(Result);
 	return Result;
 }

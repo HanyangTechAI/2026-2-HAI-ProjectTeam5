@@ -43,6 +43,33 @@ bool FSHBoardGridTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSHBoardGridCoveringTest, "TEAM5.Board.GridCovering",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FSHBoardGridCoveringTest::RunTest(const FString& Parameters)
+{
+	// 학습 아레나 반경이면 기본 격자와 똑같아야 한다 — 기존 적 배치 데이터가 그대로 맞는다.
+	const FSHBoardGrid Default;
+	const FSHBoardGrid Small = FSHBoardGrid::Covering(1750.0);
+	TestEqual(TEXT("1750: 열"), Small.Columns, Default.Columns);
+	TestEqual(TEXT("1750: 행"), Small.Rows, Default.Rows);
+	TestTrue(TEXT("1750: 원점"), Small.Origin.Equals(Default.Origin));
+
+	// 2450 / 250 = 9.8 → 한쪽 10칸 → 20 x 20, 원점 −2500.
+	const FSHBoardGrid Large = FSHBoardGrid::Covering(2450.0);
+	TestEqual(TEXT("2450: 열"), Large.Columns, 20);
+	TestEqual(TEXT("2450: 행"), Large.Rows, 20);
+	TestTrue(TEXT("2450: 원점"), Large.Origin.Equals(FVector2D(-2500.0, -2500.0)));
+
+	// 칸 수가 짝수라 중심(0,0)은 칸 경계 위에 있고, 가운데 두 칸 중심이 ±125 로 대칭이다.
+	TestEqual(TEXT("2450: 가운데 서쪽 칸"), Large.CellCenter(FIntPoint(9, 9)).X, -125.0);
+	TestEqual(TEXT("2450: 가운데 동쪽 칸"), Large.CellCenter(FIntPoint(10, 10)).X, 125.0);
+
+	// 반경이 칸 크기보다 작아도 최소 2 x 2.
+	TestEqual(TEXT("작은 반경"), FSHBoardGrid::Covering(10.0).Columns, 2);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSHPlacementEmptyTest, "TEAM5.Board.PlacementEmpty",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
 

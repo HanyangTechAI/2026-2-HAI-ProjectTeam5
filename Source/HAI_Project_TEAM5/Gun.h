@@ -106,6 +106,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gun")
 	FGunFireResult PullTrigger();
 
+	/** 쿨다운을 소비하고 명중 대상을 추적하되 피해는 아직 적용하지 않는다. */
+	FGunFireResult PrepareShot();
+
+	/** PrepareShot 결과의 피해·사격 통계를 적용한다. */
+	void ResolveShot(FGunFireResult& Result);
+
 	/** 에피소드 리셋 — 쿨다운을 비운다. 빠뜨리면 부활 직후 몇 초간 발사 불가. */
 	UFUNCTION(BlueprintCallable, Category = "Gun")
 	void ResetForNewMatch();

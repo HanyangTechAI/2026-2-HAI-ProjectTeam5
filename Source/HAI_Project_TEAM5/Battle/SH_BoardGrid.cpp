@@ -2,6 +2,21 @@
 
 #include "Battle/SH_BoardGrid.h"
 
+FSHBoardGrid FSHBoardGrid::Covering(const double Radius, const double InCellSize)
+{
+	FSHBoardGrid Result;
+	Result.CellSize = FMath::Max(InCellSize, 1.0);
+
+	// 한쪽 절반에 필요한 칸 수를 올림한 뒤 두 배 → 항상 짝수.
+	const int32 HalfCount = FMath::Max(1, FMath::CeilToInt32(Radius / Result.CellSize));
+	Result.Columns = 2 * HalfCount;
+	Result.Rows    = 2 * HalfCount;
+
+	const double HalfExtent = static_cast<double>(HalfCount) * Result.CellSize;
+	Result.Origin = FVector2D(-HalfExtent, -HalfExtent);
+	return Result;
+}
+
 bool FSHBoardGrid::IsInside(const FIntPoint Cell) const
 {
 	return Cell.X >= 0 && Cell.X < Columns && Cell.Y >= 0 && Cell.Y < Rows;

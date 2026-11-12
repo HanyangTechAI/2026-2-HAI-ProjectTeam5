@@ -84,6 +84,21 @@ float USH_ShooterTrainingEnv::GetRoundClockCost() const
 	return OutcomeReward * GetRoundRewardScale() * (1.0f - FMath::Clamp(ClockDiscount, 0.0f, 1.0f));
 }
 
+float USH_ShooterTrainingEnv::CalculateCombatReward(const UCombatStatsComponent& Stats) const
+{
+	float Reward = DamageDealtWeight * (Stats.DamageDealtAccum / 100.0f);
+	Reward -= DamageTakenWeight * (Stats.DamageTakenAccum / 100.0f);
+	Reward += KillBonus * static_cast<float>(Stats.KillsAccum);
+
+	const int32 Missed = FMath::Max(0, Stats.ShotsFiredAccum - Stats.ShotsHitAccum);
+	Reward -= MissWeight * static_cast<float>(Missed);
+	if (Stats.bDiedThisInterval)
+	{
+		Reward -= DeathPenalty;
+	}
+	return Reward;
+}
+
 float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit, const int32 AgentId)
 {
 	++RewardStepCount;
@@ -104,20 +119,8 @@ float USH_ShooterTrainingEnv::ComputeIndividualReward(ASH_RLCharacter* Unit, con
 	DamageDealtInterval += Stats->DamageDealtAccum;
 	++GathersInterval;
 
-	float Reward = 0.0f;
-
 	// --- 전투 (제로섬) --------------------------------------------------------
-	Reward += DamageDealtWeight * (Stats->DamageDealtAccum / 100.0f);
-	Reward -= DamageTakenWeight * (Stats->DamageTakenAccum / 100.0f);
-	Reward += KillBonus * static_cast<float>(Stats->KillsAccum);
-
-	const int32 Missed = FMath::Max(0, Stats->ShotsFiredAccum - Stats->ShotsHitAccum);
-	Reward -= MissWeight * static_cast<float>(Missed);
-
-	if (Stats->bDiedThisInterval)
-	{
-		Reward -= DeathPenalty;
-	}
+	float Reward = CalculateCombatReward(*Stats);
 
 	if (bAlive)
 	{

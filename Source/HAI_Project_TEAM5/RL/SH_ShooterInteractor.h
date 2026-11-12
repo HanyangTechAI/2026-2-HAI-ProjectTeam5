@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Gun.h"
 #include "LearningAgentsInteractor.h"
 #include "SH_ShooterInteractor.generated.h"
 
@@ -137,6 +138,11 @@ public:
 		const FLearningAgentsActionObjectElement& InActionObjectElement,
 		const int32 AgentId) override;
 
+	virtual void PerformAgentActions_Implementation(
+		const ULearningAgentsActionObject* InActionObject,
+		const TArray<FLearningAgentsActionObjectElement>& InActionObjectElements,
+		const TArray<int32>& AgentIds) override;
+
 	virtual void MakeAgentActionModifier_Implementation(
 		FLearningAgentsActionModifierElement& OutActionModifierElement,
 		ULearningAgentsActionModifier* InActionModifier,
@@ -184,4 +190,12 @@ protected:
 
 private:
 	FActionStats ActionStats;
+	int32 InitialActionOrderLogCount = 0;
+	bool bCollectingFireIntents = false;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AGun>> PendingFireGuns;
+
+	UPROPERTY(Transient)
+	TArray<FGunFireResult> PendingFireResults;
 };

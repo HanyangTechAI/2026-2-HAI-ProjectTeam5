@@ -276,6 +276,16 @@ void ASH_CombatTrainer::BeginPlay()
 		}
 	}
 
+	if (bEvalMode)
+	{
+		int32 OverrideEvalSeed = Seed;
+		if (FParse::Value(FCommandLine::Get(), TEXT("SHEvalSeed="), OverrideEvalSeed)
+			&& OverrideEvalSeed >= 0)
+		{
+			Seed = OverrideEvalSeed;
+		}
+	}
+
 	int32 OverrideDrawVision = -1;
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHDrawVision="), OverrideDrawVision) && (OverrideDrawVision == 0 || OverrideDrawVision == 1))
 	{
@@ -318,8 +328,8 @@ void ASH_CombatTrainer::BeginPlay()
 	if (bEvalMode)
 	{
 		UE_LOG(LogTemp, Display,
-			TEXT("[SH_CombatTrainer] 평가 모드 — 스냅샷 '%s', 행동 잡음 x%.2f, 라운드 상한 %d, %s."),
-			*EvalSnapshotDir, EvalActionNoise, EvalMaxRounds,
+			TEXT("[SH_CombatTrainer] 평가 모드 — 스냅샷 '%s', seed %d, 행동 잡음 x%.2f, 라운드 상한 %d, %s."),
+			*EvalSnapshotDir, Seed, EvalActionNoise, EvalMaxRounds,
 			bEvalRealtime ? TEXT("실제 시간") : TEXT("고정 델타타임(최대 속도)"));
 	}
 
@@ -563,6 +573,43 @@ void ASH_CombatTrainer::Assemble()
 	TArray<ABase_Character*> OpponentUnits;
 	CollectAgentUnits(Units, &OpponentUnits);
 
+	TArray<ASH_RLCharacter*> AgentOrderUnits = Units;
+	int32 AgentOrderOverride = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHAgentOrder="), AgentOrderOverride))
+	{
+		if (AgentOrderOverride == 1 || AgentOrderOverride == 2)
+		{
+			AgentOrderUnits.Sort([AgentOrderOverride](const ASH_RLCharacter& A, const ASH_RLCharacter& B)
+			{
+				const ASH_Arena* ArenaA = Cast<ASH_Arena>(A.CachedGym.Get());
+				const ASH_Arena* ArenaB = Cast<ASH_Arena>(B.CachedGym.Get());
+				const FString ArenaNameA = ArenaA ? ArenaA->GetName() : FString();
+				const FString ArenaNameB = ArenaB ? ArenaB->GetName() : FString();
+				if (ArenaNameA != ArenaNameB)
+				{
+					return ArenaNameA < ArenaNameB;
+				}
+
+				const int32 TeamA = A.CombatStats ? static_cast<int32>(A.CombatStats->TeamId) : 0;
+				const int32 TeamB = B.CombatStats ? static_cast<int32>(B.CombatStats->TeamId) : 0;
+				if (TeamA != TeamB)
+				{
+					return AgentOrderOverride == 1 ? TeamA < TeamB : TeamA > TeamB;
+				}
+				return A.GetName() < B.GetName();
+			});
+			UE_LOG(LogTemp, Display,
+				TEXT("[SH_CombatTrainer] 진단용 에이전트 등록 순서: %s 먼저."),
+				AgentOrderOverride == 1 ? TEXT("팀0") : TEXT("팀1"));
+		}
+		else if (AgentOrderOverride != 0)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[SH_CombatTrainer] SHAgentOrder=%d 무시 — 0(기본), 1(팀0 먼저), 2(팀1 먼저)만 허용."),
+				AgentOrderOverride);
+		}
+	}
+
 	// 시야 그리기 (시각 확인용). RL 정책이 조종하는 유닛 전부 — 학습 정책과 상대 정책.
 	if (bDrawVisionDebug)
 	{
@@ -805,7 +852,7 @@ void ASH_CombatTrainer::Assemble()
 	{
 		Agents.Reset(Units.Num());
 		ArenaAgentIds.Reset();
-		for (ASH_RLCharacter* Unit : Units)
+		for (ASH_RLCharacter* Unit : AgentOrderUnits)
 		{
 			const int32 AgentId = Manager->AddAgent(Unit);
 			Agents.Add(Unit);
@@ -861,7 +908,7 @@ void ASH_CombatTrainer::Assemble()
 	// --- 8. ★ 에이전트 등록은 맨 마지막 --------------------------------------
 	// 리스너가 생기기 전에 추가된 에이전트는 그 리스너에게 영원히 보이지 않고, 에러도 없다.
 	Agents.Reset(Units.Num());
-	for (ASH_RLCharacter* Unit : Units)
+	for (ASH_RLCharacter* Unit : AgentOrderUnits)
 	{
 		// ★ 폰을 등록한다. 풀이 재사용하는 것이 폰이고(DisableEntity 가 Destroy 하지 않는다),
 		//   컨트롤러는 원칙적으로 교체될 수 있다.

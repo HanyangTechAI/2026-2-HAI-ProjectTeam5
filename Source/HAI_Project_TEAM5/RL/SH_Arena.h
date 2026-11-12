@@ -188,8 +188,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SH|Spawn")
 	bool bAlternateSides = false;
 
-	/** 지금 라운드에 진영이 바뀌어 있는가. true 면 팀 0 이 +X 쪽, 팀 1 이 −X 쪽이다. */
-	bool AreSidesSwapped() const { return bSidesSwapped; }
+	/** 지금 라운드에 진영이 바뀌어 있는가. true 면 팀 0 이 +X 쪽, 팀 1 이 −X 쪽이다.
+	 *  라운드 교대(bSidesSwapped)와 진단용 고정 교환(bSwapSpawnSidesForEvaluation)이 둘 다 켜지면 서로 상쇄된다. */
+	bool AreSidesSwapped() const { return bSidesSwapped != bSwapSpawnSidesForEvaluation; }
 
 	//~ 라운드 규칙 — 게임 규칙이기도 하다 -------------------------------------
 
@@ -436,8 +437,10 @@ protected:
 	 *  BeginPlay 시점에는 GymsManager 가 아직 RandomStream 을 주입하지 않았고
 	 *  (LearningAgentsGymsManager.cpp:86-89 순서), 지터 범위를 전부 훑는 것은 과하다.
 	 *  지터를 쓰면 DrawDebugArena 로 눈으로 확인할 것.
+	 *
+	 *  ★ virtual 인 이유: 인게임 보드(ASH_BattleBoard)는 슬롯을 쓰지 않고 칸에 배치하므로 검사를 끈다.
 	 */
-	void ValidateSpawnSlotsClear() const;
+	virtual void ValidateSpawnSlotsClear() const;
 
 	/** 팔각형 벽. 개수는 고정(생성자에서 만들어야 하므로). */
 	static constexpr int32 NumWalls = 8;
@@ -466,6 +469,7 @@ private:
 	float FirstDamageTime = -1.0f;
 	float ZoneDamageTimer = 0.0f;
 	float ZoneDamageTotal[2] = { 0.0f, 0.0f };
+	bool bSwapSpawnSidesForEvaluation = false;
 
 	/** bAlternateSides 가 켜져 있으면 ResetRound 마다 뒤집힌다. 첫 라운드는 고정 진영이다. */
 	bool bSidesSwapped = false;

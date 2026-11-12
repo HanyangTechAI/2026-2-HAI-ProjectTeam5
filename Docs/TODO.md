@@ -724,7 +724,9 @@ d스텝 뒤 승리:   W(2γ^d − 1)                                 (빨리 이
 - 학습기·파이썬·크리틱 없이 정책을 불러와 추론만 한다. 끝난 아레나만 `Manager->ResetAgents` 로 리셋한다
   (정책 메모리 초기화 + 환경의 `ResetAgentEpisode` → `Gym->Reset`).
 - 상대: 기본은 팀 1 의 스크립트 봇, `-SHSelfPlay=1` 이면 같은 정책.
-- `-SHEvalRounds=N`(라운드 상한), `-SHEvalNoise=`(행동 잡음, 기본 1.0), `-SHEvalRealtime=1`(고정 델타타임 끔 — 화면을 켜고 볼 때).
+- `-SHEvalRounds=N`(라운드 상한), `-SHEvalNoise=`(행동 잡음, 기본 1.0), `-SHEvalSeed=N`(평가 정책 난수 시드), `-SHEvalRealtime=1`(고정 델타타임 끔 — 화면을 켜고 볼 때).
+- 편향 진단 전용: `-SHSwapSpawnSides=1` 은 팀 좌석만 바꾸고, `-SHAgentOrder=1|2` 는 에이전트 등록/액션 순서를 팀0 먼저/팀1 먼저로 고정한다. 기본값은 기존 동작이다. 시작 시 첫 20개 액션 콜백의 AgentId/TeamId 도 기록한다.
+- RL 행동은 모든 등록 유닛의 발사 궤적을 먼저 추적한 뒤 피해를 적용해, 한 팀의 즉시 사망이 같은 결정 주기 상대의 발사를 취소하지 않게 한다. 개별 `AGun::PullTrigger()` 호출은 기존 즉시 명중 처리를 유지한다.
 - 끝나면 팀 0(RL) 승률과 95% 윌슨 구간을 찍는다.
 - 고정 델타타임은 학습과 같은 `UE::Learning::Agents::ApplyGameSettings` 로 건다. 평가 중 시뮬레이션은 실제 시간 1배속(결정 20/s)으로 돈다.
 
@@ -1339,3 +1341,50 @@ UPROPERTY(EditAnywhere) bool bPolicyControlsTarget = true;
    `/Game/RL/Lvl_SHTrain` 을 `C:/Program Files/Git/Game/RL/Lvl_SHTrain` 으로 바꿔 버린다
 4. **실행 길이는 커맨드라인으로 준다** (`-SHTrainSeconds=`, `-SHReportInterval=`).
    레벨 에셋의 `MaxWallClockSeconds` 를 고치려면 에디터를 열어야 하고 `.umap` 이 더러워진다
+
+## 팀 0 승률 편향 — Unreal 배치 피해 검증 (2026-11-05)
+
+`fix/team0-win-bias` 에서 기존 변경을 보존한 채 실제 Unreal 게임 월드 자동화 테스트를 실행했다.
+대규모 승률 평가는 추가 실행하지 않았고, `main` 에 병합하지 않았다.
+
+**실행**
+
+- 빌드: Unreal Engine 5.8.2, `HAI_Project_TEAM5Editor Win64 Development` — 성공.
+- 실행: `UnrealEditor-Cmd.exe HAI_Project_TEAM5.uproject /Game/ThirdPerson/Lvl_ThirdPerson -game -unattended -nopause -nosplash -nullrhi -nosound -ExecCmds="Automation RunTests HAI.Combat.BatchResolution" -TestExit="Automation Test Queue Empty"`.
+- 로그: `Saved/Logs/combat-batch-gameworld.log`; `ReciprocalLethalShots`, `MultipleShootersSingleTarget` 모두 성공.
+- 빌드에는 선호 버전보다 최신인 MSVC 경고와 기존 `GetMovementBase` deprecated 경고가 있었지만 오류는 없었다.
+
+**기존 self-play 평가 — 1,080라운드**
+
+- 동일한 `cum008h00m` 모델, 행동 잡음 1.0, 고정 델타타임, 시드 1234/2345/3456을 각 조건당 120라운드씩 평가했다. 조건별 시드와 라운드 수는 일치한다.
+- 팀0/팀1/무승부 집계:
+
+  | 조건 | 팀0 승 | 팀1 승 | 무승부 | 라운드 | 팀0 승률 |
+  |---|---:|---:|---:|---:|---:|
+  | 기본 | 185 | 173 | 2 | 360 | 51.4% |
+  | 시작 위치 교환 | 175 | 183 | 2 | 360 | 48.6% |
+  | 팀1 우선 처리 | 173 | 186 | 1 | 360 | 48.1% |
+  | 합계 | 533 | 542 | 5 | 1,080 | 49.4% |
+
+- 기본 조건의 51.4%는 작은 팀0 우위를 보이지만, 위치 교환과 팀1 우선에서는 팀0 승률이 50% 아래였다. 조건별 95% Wilson 구간이 넓고 서로 겹치므로 이 결과만으로 편향이 해결됐거나 특정 원인이 확정됐다고 볼 수 없다.
+- 로그: `team0-bias-seed{1234,2345,3456}-{default,swapped-seats,team1-first}.log` (`Saved/Logs/`).
+
+**상호 치명타**
+
+- 양쪽 발사의 `PrepareShot` 을 모두 끝낸 뒤 `ResolveShot` 순서만 `[0,1]` / `[1,0]` 으로 바꾸어 실제 월드 라인트레이스를 실행했다.
+- 두 순서 모두 양쪽 발사·명중 각 1회, HP 20 피해, 피해·가해 누산 20, 킬 각 1회, 사망 interval 기록이 같았다. 사망 콜백 후 양쪽 캡슐도 `NoCollision` 이었다.
+- 따라서 이미 준비된 두 번째 공격이 첫 번째 공격자의 사망 때문에 취소되거나, 해당 명중·피해·킬 집계가 빠지는 현상은 이 재현에서는 관찰되지 않았다. 이는 실제 게임 월드에서의 `AGun::PrepareShot` / `ResolveShot` 경로 검증이다.
+
+**한 표적에 대한 세 공격**
+
+- 피해 10인 같은 팀 공격자 3명이 HP 15인 표적을 모두 피해 적용 전에 조준·발사하고, 처리 순서를 `[0,1,2]` 와 `[2,0,1]` 로 바꿨다.
+- 두 순서 모두 팀 합계 피해 15, 킬 1, 발사 3, 양의 피해 명중 2로 같았고 표적의 피해는 남은 HP 15로 제한됐다. 사망 후 적용된 0 피해 공격은 피해·명중으로 계산되지 않았다.
+- **개인 귀속은 순서에 따라 달라졌다.** 먼저 처리된 공격은 피해 10 / 전투 보상 항목 0.1, HP를 0으로 만든 공격은 피해 5·킬 1 / 0.55, 사망 후 공격은 피해 0·킬 0 / -0.005를 받았다. 이 보상 항목의 합 0.645는 두 순서에서 같았다.
+- 현재 동작은 순차 피해 적용에서 HP를 0으로 만든 공격자에게 킬을 귀속하는 규칙과 일치한다. 총 피해·킬·명중의 팀 합계 누락은 재현되지 않았지만, 공격 처리 순서가 개인별 피해·킬·보상 귀속에는 영향을 준다. 이는 개인 보상 공정성 측면에서 별도 설계 판단이 필요하며 팀 0 승률 편향의 원인이라고 단정할 수는 없다.
+
+**범위와 남은 검증**
+
+- 자동화 테스트는 실제 Unreal 게임 월드와 히트스캔을 사용하지만, Learning Agents 액션 객체를 만들거나 `USH_ShooterInteractor::PerformAgentActions_Implementation` 을 직접 호출하지는 않는다. 인터랙터 전체 파이프라인의 AgentId 순서가 이 검증 결과와 일치하는지는 아직 자동화되지 않았다.
+- 다수 공격 보상은 실제 `USH_ShooterTrainingEnv::ComputeIndividualReward` 호출이 아니라 해당 전투 보상 항목을 스탯으로 계산한 값이다. 라운드 승패 집계와 학습 모델 승률도 이번 테스트 범위 밖이다.
+- **개인별 피해·킬·보상 귀속은 여전히 발사 처리 순서에 민감하다.** 총 피해·킬 등 팀 합계는 재현에서 일정했지만, 실제 게임 규칙으로 의도된 귀속인지 별도 결정이 필요하다.
+- 다음 검증은 Learning Agents 실제 액션 배치 경로에서 AgentId 순서를 바꾼 뒤 동일 귀속 결과를 확인하는 것이다. 팀 단위 합계는 순서 불변이었지만 개인 귀속 순서가 의도된 규칙인지 결정하기 전까지 이를 임의 변경하지 않는다.

@@ -22,8 +22,25 @@ ASH_BattleBoard* ASH_BattleGameMode::GetBoard() const
 	{
 		if (UWorld* World = GetWorld())
 		{
-			TActorIterator<ASH_BattleBoard> It(World);
-			CachedBoard = It ? *It : nullptr;
+			// 켜진 보드(bActiveBoard)를 쓴다. 여러 개가 켜져 있으면 처음 것을 쓰고 알린다.
+			int32 ActiveCount = 0;
+			for (TActorIterator<ASH_BattleBoard> It(World); It; ++It)
+			{
+				if (!It->IsActiveBoard())
+				{
+					continue;
+				}
+				if (++ActiveCount == 1)
+				{
+					CachedBoard = *It;
+				}
+			}
+			if (ActiveCount > 1)
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[SH_BattleGameMode] 켜진 보드가 %d 개다. '%s' 를 쓴다. 나머지는 bActiveBoard 를 끌 것."),
+					ActiveCount, *CachedBoard->GetName());
+			}
 		}
 	}
 	return CachedBoard.Get();
@@ -39,7 +56,7 @@ void ASH_BattleGameMode::BeginPlay()
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT("[SH_BattleGameMode] 레벨에 ASH_BattleBoard 가 없다."));
+		UE_LOG(LogTemp, Error, TEXT("[SH_BattleGameMode] 레벨에 켜진(bActiveBoard) ASH_BattleBoard 가 없다."));
 	}
 }
 

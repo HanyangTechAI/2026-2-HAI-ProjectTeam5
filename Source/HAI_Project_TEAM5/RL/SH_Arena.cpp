@@ -13,6 +13,8 @@
 #include "GameFramework/Controller.h"
 #include "LearningAgentsEntitiesManagerComponent.h"
 #include "LearningAgentsEntityInterface.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace SHArena
@@ -195,6 +197,17 @@ void ASH_Arena::BeginPlay()
 {
 	Super::BeginPlay();
 
+	int32 OverrideSwapSpawnSides = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHSwapSpawnSides="), OverrideSwapSpawnSides)
+		&& (OverrideSwapSpawnSides == 0 || OverrideSwapSpawnSides == 1))
+	{
+		bSwapSpawnSidesForEvaluation = OverrideSwapSpawnSides == 1;
+	}
+	if (bSwapSpawnSidesForEvaluation)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[SH_Arena] %s: 진단용 팀 스폰 좌우 교환 켬."), *GetName());
+	}
+
 	if (Team0UnitClass && Team1UnitClass && Team0UnitClass == Team1UnitClass)
 	{
 		UE_LOG(LogTemp, Error,
@@ -338,7 +351,7 @@ void ASH_Arena::EndRound(ESHRoundEnd End)
 	Record.End = End;
 	Record.Duration = GetRoundElapsed();
 	Record.FirstDamageTime = FirstDamageTime;
-	Record.bSidesSwapped = bSidesSwapped;
+	Record.bSidesSwapped = AreSidesSwapped();   // 진영별 승수는 실제로 스폰된 진영 기준이어야 한다
 
 	// 리포트가 돌지 않는 환경(에디터 미리보기 등)에서 무한히 쌓이지 않게.
 	if (PendingRoundRecords.Num() < 4096)
@@ -684,9 +697,9 @@ FTransform ASH_Arena::GetSpawnTransformForSlot(int32 Team, int32 SlotIndex, int3
 	const int32 Slot = FMath::Clamp(SlotIndex, 0, Count - 1);
 
 	// 팀 0 은 -X 쪽, 팀 1 은 +X 쪽. 호의 중심을 기준으로 좌우 대칭 배치.
-	// 진영 교대(bAlternateSides) 중에 뒤집힌 라운드면 반대다.
-	const int32 Side = bSidesSwapped ? 1 - Team : Team;
-	const float BaseAngleDeg = (Side == 0) ? 180.0f : 0.0f;
+	// 진영 교대(bAlternateSides)로 뒤집힌 라운드거나 진단용 교환(-SHSwapSpawnSides=1)이 켜져 있으면 반대다.
+	const int32 SpawnSideTeam = AreSidesSwapped() ? 1 - Team : Team;
+	const float BaseAngleDeg = (SpawnSideTeam == 0) ? 180.0f : 0.0f;
 	const float Offset = (static_cast<float>(Slot) - 0.5f * static_cast<float>(Count - 1)) * ArcStepDegrees;
 
 	float AngleDeg = BaseAngleDeg + Offset;
