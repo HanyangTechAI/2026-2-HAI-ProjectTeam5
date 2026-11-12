@@ -173,6 +173,11 @@ void ASH_CombatTrainer::BeginPlay()
 	{
 		RoundTimeOverride = OverrideRoundTime;
 	}
+	float OverrideApproach = -1.0f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHApproach="), OverrideApproach) && OverrideApproach >= 0.0f)
+	{
+		ApproachOverride = OverrideApproach;
+	}
 	float OverrideTeamSpirit = -1.0f;
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHTeamSpirit="), OverrideTeamSpirit) && OverrideTeamSpirit >= 0.0f)
 	{
@@ -667,6 +672,10 @@ void ASH_CombatTrainer::Assemble()
 		return;
 	}
 
+	if (ApproachOverride >= 0.0f)
+	{
+		TrainingEnvironment->ApproachWeight = ApproachOverride;
+	}
 	if (TeamSpiritOverride >= 0.0f)
 	{
 		TrainingEnvironment->TeamSpirit = TeamSpiritOverride;
@@ -1810,13 +1819,14 @@ void ASH_CombatTrainer::Report(double RealElapsed)
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[SH_CombatTrainer] %5.0f초 | 결정 %d (%.1f/s, %.0f step/s) | ")
-		TEXT("생존 %.1f%% | 시야에 적 %.1f%% | 사격 %lld 명중 %lld (%.1f%%) | 셰이핑 x%.2f | 라운드 보상 x%.2f"),
+		TEXT("생존 %.1f%% | 시야에 적 %.1f%% | 사격 %lld 명중 %lld (%.1f%%) | 셰이핑 x%.2f | 라운드 보상 x%.2f | 접근 w%.2f"),
 		FPlatformTime::Seconds() - StartRealTime,
 		DecisionCount, DecisionsPerSecond, StepsPerSecond,
 		100.0 * AliveRate, 100.0 * VisibleRate,
 		Fired, Hit, HitRate,
 		TrainingEnvironment ? TrainingEnvironment->GetShapingScale() : 0.0f,
-		TrainingEnvironment ? TrainingEnvironment->GetRoundRewardScale() : 0.0f);
+		TrainingEnvironment ? TrainingEnvironment->GetRoundRewardScale() : 0.0f,
+		TrainingEnvironment ? TrainingEnvironment->ApproachWeight : -1.0f);
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[SH_CombatTrainer]        라운드 %d (팀0 승 %d / 팀1 승 %d / 시간초과 %d (%.0f%%) / 동시전멸 %d) | ")
