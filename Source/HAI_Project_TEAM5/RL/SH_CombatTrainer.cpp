@@ -142,6 +142,41 @@ void ASH_CombatTrainer::BeginPlay()
 	StartRealTime = FPlatformTime::Seconds();
 	LastReportRealTime = StartRealTime;
 
+	// Experiment controls do not change observation/action schemas. Invalid values keep defaults.
+	auto ReadSwitch = [](const TCHAR* Key, bool& Value)
+	{
+		int32 Parsed = -1;
+		if (FParse::Value(FCommandLine::Get(), Key, Parsed))
+		{
+			if (Parsed == 0 || Parsed == 1) { Value = Parsed == 1; }
+			else { UE_LOG(LogTemp, Warning, TEXT("[SH_Experiment] %s expects 0 or 1; keeping default."), Key); }
+		}
+	};
+	auto ReadScale = [](const TCHAR* Key, float& Value, float Maximum)
+	{
+		float Parsed = -1.0f;
+		if (FParse::Value(FCommandLine::Get(), Key, Parsed))
+		{
+			if (FMath::IsFinite(Parsed) && Parsed >= 0.0f && Parsed <= Maximum) { Value = Parsed; }
+			else { UE_LOG(LogTemp, Warning, TEXT("[SH_Experiment] Invalid %s; keeping default."), Key); }
+		}
+	};
+	ReadSwitch(TEXT("SHAimAssist="), bAimAssist);
+	ReadScale(TEXT("SHAimAssistStrength="), AimAssistStrength, 1.0f);
+	ReadSwitch(TEXT("SHAimReward="), bAimReward);
+	ReadScale(TEXT("SHAimRewardScale="), AimRewardScale, MAX_flt);
+	ReadSwitch(TEXT("SHSeeReward="), bSeeReward);
+	ReadScale(TEXT("SHSeeRewardScale="), SeeRewardScale, MAX_flt);
+	FParse::Value(FCommandLine::Get(), TEXT("SHExperiment="), ExperimentName);
+	int32 ExperimentSeed = Seed;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHSeed="), ExperimentSeed) && ExperimentSeed >= 0)
+	{
+		Seed = ExperimentSeed;
+	}
+	AimAssistStrength = FMath::IsFinite(AimAssistStrength) ? FMath::Clamp(AimAssistStrength, 0.0f, 1.0f) : 1.0f;
+	AimRewardScale = FMath::IsFinite(AimRewardScale) ? FMath::Max(AimRewardScale, 0.0f) : 1.0f;
+	SeeRewardScale = FMath::IsFinite(SeeRewardScale) ? FMath::Max(SeeRewardScale, 0.0f) : 1.0f;
+
 	// --- 커맨드라인 오버라이드 ------------------------------------------------
 	// ★ 실행 길이를 바꿀 때마다 레벨 에셋을 커멘드릿으로 다시 저장하면
 	//   (1) 에디터를 닫아야 하고 (2) .umap 이 계속 더러워진다.
@@ -172,6 +207,11 @@ void ASH_CombatTrainer::BeginPlay()
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHRoundTime="), OverrideRoundTime) && OverrideRoundTime >= 1.0f)
 	{
 		RoundTimeOverride = OverrideRoundTime;
+	}
+	float OverrideApproach = -1.0f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHApproach="), OverrideApproach) && OverrideApproach >= 0.0f)
+	{
+		ApproachOverride = OverrideApproach;
 	}
 	float OverrideTeamSpirit = -1.0f;
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHTeamSpirit="), OverrideTeamSpirit) && OverrideTeamSpirit >= 0.0f)
@@ -668,6 +708,9 @@ void ASH_CombatTrainer::Assemble()
 
 	// 피격 기억도 같은 이유로 맞춘다. 이쪽은 컴포넌트가 아니라 폰이 들고 있다.
 	Interactor->HitMemoryHorizonSeconds = Units[0]->HitMemoryHorizonSeconds;
+	Interactor->bAimAssist = bAimAssist;
+	Interactor->AimAssistStrength = AimAssistStrength;
+	Interactor->AimAssistDecisionPeriod = 1.0f / FMath::Max(1.0f, DecisionRateHz);
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[SH_CombatTrainer] 스키마 크기 — 관측 %d (인코딩 %d) / 행동 %d (분포 %d, 모디파이어 %d)"),
@@ -714,6 +757,10 @@ void ASH_CombatTrainer::Assemble()
 		return;
 	}
 
+	if (ApproachOverride >= 0.0f)
+	{
+		TrainingEnvironment->ApproachWeight = ApproachOverride;
+	}
 	if (TeamSpiritOverride >= 0.0f)
 	{
 		TrainingEnvironment->TeamSpirit = TeamSpiritOverride;
@@ -729,6 +776,10 @@ void ASH_CombatTrainer::Assemble()
 
 	// ★ 시계 비용의 상쇄는 학습에 실제로 쓰는 γ 와 같을 때만 정확하다.
 	TrainingEnvironment->ClockDiscount = TrainingSettings.DiscountFactor;
+	TrainingEnvironment->bAimReward = bAimReward;
+	TrainingEnvironment->AimRewardScale = AimRewardScale;
+	TrainingEnvironment->bSeeReward = bSeeReward;
+	TrainingEnvironment->SeeRewardScale = SeeRewardScale;
 
 	// 이어서 학습하기: 네트워크 4개 + 보상 수집 누적 횟수. 환경이 생긴 뒤여야 한다.
 	if (!bEvalMode && !ResumeDir.IsEmpty() && !LoadResumeSnapshot(ResumeDir))
@@ -803,6 +854,8 @@ void ASH_CombatTrainer::Assemble()
 		TrainingSettings.bSaveSnapshots ? TEXT("켬") : TEXT("끔"),
 		TrainingSettings.bUseGradNormMaxClipping ? TEXT("켬") : TEXT("끔"));
 
+	WriteExperimentSettings();
+
 	// --- 날짜별 학습 기록(md)의 실행 머리말 ---------------------------------------
 	// 무엇으로 학습했는지는 코드만 봐서는 알 수 없다(명령줄 오버라이드가 많다). 실행마다 남긴다.
 	if (!bEvalMode)
@@ -828,6 +881,10 @@ void ASH_CombatTrainer::Assemble()
 			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bTimeoutIsLossForBoth) ? TEXT("양쪽 패배") : TEXT("무승부"),
 			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bShrinkZone) ? TEXT("켬") : TEXT("끔"),
 			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bAlternateSides) ? TEXT("켬") : TEXT("끔"));
+		RunLogHeader.ReplaceInline(TEXT("- 스냅샷:\n"), *FString::Printf(
+			TEXT("- 조준 보조 %d (강도 %.3f), 정렬 보상 %d (배율 %.3f), 시야 보상 %d (배율 %.3f)\n- 실험 기록: `%s`\n- 스냅샷:\n"),
+			bAimAssist ? 1 : 0, AimAssistStrength, bAimReward ? 1 : 0, AimRewardScale,
+			bSeeReward ? 1 : 0, SeeRewardScale, *ExperimentDirectory));
 		AppendDailyLog(FString());
 	}
 
@@ -970,6 +1027,7 @@ void ASH_CombatTrainer::Tick(float DeltaSeconds)
 	//    (SH_HelloWorldTrainer.cpp:292 도 무조건 부르고, IsTraining 은 종료 판정에만 쓴다.)
 	if (!bEvalMode && bTrainingStarted && !Trainer->IsTraining())
 	{
+		Report(RealNow - LastReportRealTime);
 		UE_LOG(LogTemp, Warning,
 			TEXT("[SH_CombatTrainer] 학습이 종료됐다 (파이썬 프로세스 종료 또는 EndTraining). ")
 			TEXT("결정 %d회 수행."), DecisionCount);
@@ -1583,7 +1641,7 @@ void ASH_CombatTrainer::SaveVersionedSnapshot(bool bFinal)
 	// 무엇으로 만든 스냅샷인지 남긴다. 평가·상대 풀에서 버전을 고를 때 쓴다.
 	// total_reward_steps 는 이어서 학습한 실행까지 합친 누적값이다(-SHResume 이 복원한다).
 	// cumulative_seconds 는 다음 -SHResume 이 누적 시간을 이어 세는 데 쓴다.
-	const FString Meta = FString::Printf(
+	FString Meta = FString::Printf(
 		TEXT("label=%s\nrun=%s\nsaved_at=%s\ncumulative_seconds=%.0f\nelapsed_seconds=%.0f\ndecisions=%d\nagents=%d\nselfplay=%d\noutcome_reward=%.3f\nteam_spirit=%.3f\nobs_size=%d\ntotal_reward_steps=%lld\nresumed_from=%s\n"),
 		bFinal ? TEXT("final") : TEXT("interval"), *SnapshotRunStamp,
 		*FDateTime::Now().ToString(TEXT("%Y-%m-%d %H:%M:%S")),
@@ -1593,7 +1651,18 @@ void ASH_CombatTrainer::SaveVersionedSnapshot(bool bFinal)
 		Interactor ? Interactor->GetObservationVectorSize() : -1,
 		TrainingEnvironment ? TrainingEnvironment->GetRewardStepCount() : -1LL,
 		ResumeDir.IsEmpty() ? TEXT("-") : *ResumeDir);
+	Meta += FString::Printf(
+		TEXT("experiment=%s\nexperiment_directory=%s\naim_assist=%d\naim_assist_strength=%.6f\naim_reward=%d\naim_reward_scale=%.6f\nsee_reward=%d\nsee_reward_scale=%.6f\nseed=%d\n"),
+		*ExperimentName.Replace(TEXT("\n"), TEXT(" ")).Replace(TEXT("\r"), TEXT(" ")),
+		*ExperimentDirectory, bAimAssist ? 1 : 0, AimAssistStrength, bAimReward ? 1 : 0,
+		AimRewardScale, bSeeReward ? 1 : 0, SeeRewardScale, Seed);
 	FFileHelper::SaveStringToFile(Meta, *FPaths::Combine(Directory, Name + TEXT("_meta.txt")));
+	if (!ExperimentDirectory.IsEmpty() && IFileManager::Get().Copy(
+		*FPaths::Combine(Directory, Name + TEXT("_experiment.json")),
+		*FPaths::Combine(ExperimentDirectory, TEXT("settings.json"))) != COPY_OK)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SH_Experiment] Could not copy experiment settings into snapshot: %s"), *Directory);
+	}
 	RunSnapshotDirs.Add(Directory);
 
 	AppendDailyLog(FString::Printf(
@@ -1849,6 +1918,7 @@ void ASH_CombatTrainer::Report(double RealElapsed)
 				/ static_cast<double>(ActionStats.Decisions);
 		}
 	}
+	ReportRewardStats(ActionStats.AssistedDecisions, ActionStats.Decisions);
 
 	const double FireUseRate = (ActionStats.FireOpportunities > 0)
 		? (100.0 * static_cast<double>(ActionStats.FiresUsed)
@@ -1857,13 +1927,14 @@ void ASH_CombatTrainer::Report(double RealElapsed)
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[SH_CombatTrainer] %5.0f초 | 결정 %d (%.1f/s, %.0f step/s) | ")
-		TEXT("생존 %.1f%% | 시야에 적 %.1f%% | 사격 %lld 명중 %lld (%.1f%%) | 셰이핑 x%.2f | 라운드 보상 x%.2f"),
+		TEXT("생존 %.1f%% | 시야에 적 %.1f%% | 사격 %lld 명중 %lld (%.1f%%) | 셰이핑 x%.2f | 라운드 보상 x%.2f | 접근 w%.2f"),
 		FPlatformTime::Seconds() - StartRealTime,
 		DecisionCount, DecisionsPerSecond, StepsPerSecond,
 		100.0 * AliveRate, 100.0 * VisibleRate,
 		Fired, Hit, HitRate,
 		TrainingEnvironment ? TrainingEnvironment->GetShapingScale() : 0.0f,
-		TrainingEnvironment ? TrainingEnvironment->GetRoundRewardScale() : 0.0f);
+		TrainingEnvironment ? TrainingEnvironment->GetRoundRewardScale() : 0.0f,
+		TrainingEnvironment ? TrainingEnvironment->ApproachWeight : -1.0f);
 
 	UE_LOG(LogTemp, Display,
 		TEXT("[SH_CombatTrainer]        라운드 %d (팀0 승 %d / 팀1 승 %d / 시간초과 %d (%.0f%%) / 동시전멸 %d) | ")
@@ -1944,6 +2015,11 @@ void ASH_CombatTrainer::Report(double RealElapsed)
 
 void ASH_CombatTrainer::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// Flush a short final interval when PIE stops before the next periodic report.
+	if (bAssembled && TrainingEnvironment && !ExperimentDirectory.IsEmpty())
+	{
+		Report(FPlatformTime::Seconds() - LastReportRealTime);
+	}
 	// ★ 반드시 EndTraining() 을 부른다. 안 부르면 python.exe 가 공유메모리를 잡은 채
 	//   고아 프로세스로 남고, 다음 실행이 같은 공유메모리 이름으로 붙지 못한다.
 	if (Trainer && Trainer->IsTraining())

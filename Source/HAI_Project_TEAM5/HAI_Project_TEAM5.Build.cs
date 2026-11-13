@@ -34,7 +34,7 @@ public class HAI_Project_TEAM5 : ModuleRules
 			"PhysicsCore"         // 히트스캔 트레이스 채널
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Json", "JsonUtilities" });
 
 		PublicIncludePaths.AddRange(new string[] {
 			"HAI_Project_TEAM5",
