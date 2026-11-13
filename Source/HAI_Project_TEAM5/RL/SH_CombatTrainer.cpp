@@ -264,6 +264,12 @@ void ASH_CombatTrainer::BeginPlay()
 	SnapshotRootDir = FPaths::ConvertRelativePathToFull(SnapshotRootDir);
 	FPaths::NormalizeDirectoryName(SnapshotRootDir);
 
+	int32 OverrideFlat = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHSnapshotFlat="), OverrideFlat) && (OverrideFlat == 0 || OverrideFlat == 1))
+	{
+		bFlatSnapshotDirs = OverrideFlat == 1;
+	}
+
 	// --- 이어서 학습하기 -------------------------------------------------------
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHResume="), ResumeDir) && !ResumeDir.IsEmpty())
 	{
@@ -1611,12 +1617,15 @@ void ASH_CombatTrainer::SaveVersionedSnapshot(bool bFinal)
 	// 폴더 이름 = 파일 이름 앞부분 = 누적 시간. 같은 이름이 이미 있으면(같은 스냅샷에서 두 번 이어 학습)
 	// 뒤에 _2, _3 을 붙인다 — 덮어쓰면 다른 실행의 결과가 사라진다.
 	const FString BaseName = TEXT("cum") + FormatHoursMinutes(Cumulative);
+	// -SHSnapshotFlat=1 이면 날짜 폴더를 빼고 루트 바로 아래에 둔다.
+	const FString Parent = bFlatSnapshotDirs ? SnapshotRootDir : FPaths::Combine(SnapshotRootDir, Date);
+	const FString RelativeParent = bFlatSnapshotDirs ? FString(TEXT(".")) : Date;   // 기록 파일에 적는 경로
 	FString Name = BaseName;
-	FString Directory = FPaths::Combine(SnapshotRootDir, Date, Name);
+	FString Directory = FPaths::Combine(Parent, Name);
 	for (int32 Suffix = 2; IFileManager::Get().DirectoryExists(*Directory); ++Suffix)
 	{
 		Name = FString::Printf(TEXT("%s_%d"), *BaseName, Suffix);
-		Directory = FPaths::Combine(SnapshotRootDir, Date, Name);
+		Directory = FPaths::Combine(Parent, Name);
 	}
 	IFileManager::Get().MakeDirectory(*Directory, /*Tree=*/true);
 
@@ -1667,7 +1676,7 @@ void ASH_CombatTrainer::SaveVersionedSnapshot(bool bFinal)
 
 	AppendDailyLog(FString::Printf(
 		TEXT("  - %s — 누적 **%s** → `%s/%s/` (이번 실행 %s, 결정 %d, 보상 스텝 누적 %lld)%s"),
-		*FDateTime::Now().ToString(TEXT("%H:%M")), *FormatHoursMinutes(Cumulative), *Date, *Name,
+		*FDateTime::Now().ToString(TEXT("%H:%M")), *FormatHoursMinutes(Cumulative), *RelativeParent, *Name,
 		*FormatHoursMinutes(Elapsed), DecisionCount,
 		TrainingEnvironment ? TrainingEnvironment->GetRewardStepCount() : -1LL,
 		bFinal ? TEXT(" — 실행 종료") : TEXT("")));

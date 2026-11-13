@@ -1,0 +1,8 @@
+# 언리얼 로그는 실행마다 수백 MB 가 될 수 있어 올리지 않는다(Training/<이름>/logs/).
+*/logs/
+# GitHub 로그인(토큰). 절대 올리지 않는다.
+.env
+# 실행 중 잠금 파일
+.git.lock
+*/.train.lock
+__pycache__/

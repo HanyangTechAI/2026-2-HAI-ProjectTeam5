@@ -456,6 +456,13 @@ private:
 	/** 스냅샷 최상위 폴더. 기본 <프로젝트>/Snapshots, -SHSnapshotRoot= 로 바꾼다(시험 실행용). */
 	FString SnapshotRootDir;
 
+	/**
+	 *  -SHSnapshotFlat=1 이면 날짜 폴더 없이 <SnapshotRoot>/cum012h00m/ 에 저장한다.
+	 *  Training/<학습 이름>/ 처럼 한 실험의 스냅샷을 학습 시간 순으로 한 폴더에 모을 때 쓴다(Training/train.py).
+	 *  기본은 꺼짐 — <SnapshotRoot>/<저장 날짜>/cum012h00m/.
+	 */
+	bool bFlatSnapshotDirs = false;
+
 	/** -SHResume 으로 이어 온 이전 실행들의 누적 학습 시간(초). 처음부터면 0. */
 	double CumulativeBaseSeconds = 0.0;
 
