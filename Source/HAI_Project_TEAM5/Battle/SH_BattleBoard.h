@@ -8,7 +8,10 @@
 #include "RL/SH_Arena.h"
 #include "SH_BattleBoard.generated.h"
 
+class AGun;
+class ASH_BulletTracer;
 class ASH_RLCharacter;
+struct FGunFireResult;
 class USH_EnemyLayout;
 class USH_UnitDefinition;
 
@@ -78,6 +81,18 @@ public:
 
 	[[nodiscard]] const USH_UnitDefinition* GetAllyDefinition() const;
 
+	//~ 관전 도구 -------------------------------------------------------------
+
+	/** 모든 유닛의 시야 레이(부채꼴 16개 + 보이는 적 선)를 그릴지. 나중에 배치하는 유닛에도 적용된다.
+	 *  ★ 디버그 선이라 Shipping 빌드에서는 그려지지 않는다. 레이는 전투 중(정책이 관측할 때)에만 나온다. */
+	void SetVisionRaysVisible(bool bVisible);
+	[[nodiscard]] bool AreVisionRaysVisible() const { return bShowVisionRays; }
+
+	/** 모든 유닛 총의 사격 판정 선(AGun::bDrawDebugTrace — 쏠 때마다 원점 → 맞은 곳)을 그릴지.
+	 *  나중에 배치하는 유닛에도 적용된다. ★ 디버그 선이라 Shipping 빌드에서는 그려지지 않는다. */
+	void SetAimRaysVisible(bool bVisible);
+	[[nodiscard]] bool AreAimRaysVisible() const { return bShowAimRays; }
+
 	/** 전투가 끝나면 한 번 방송한다. */
 	FSHOnBattleEnded OnBattleEnded;
 
@@ -109,6 +124,25 @@ private:
 
 	void BroadcastPlacement() const;
 	void DrawPlacementGrid() const;
+
+	/** 총이 사격을 처리할 때마다 불린다(AGun::OnShotResolved). 날아가는 총알 그림을 만든다. */
+	void HandleShotResolved(const AGun& Gun, const FGunFireResult& Result);
+
+	/** 날아가는 총알 그림. 비우면 총알을 그리지 않는다(판정에는 영향 없음). */
+	UPROPERTY(EditAnywhere, Category = "SH|Battle|View")
+	TSubclassOf<ASH_BulletTracer> TracerClass;
+
+	/** 총알 그림의 속도(cm/s). 15,000 이면 1배속에서 3,000 cm 를 0.2초, 0.1배속에서 2초에 난다. */
+	UPROPERTY(EditAnywhere, Category = "SH|Battle|View", meta = (ClampMin = "100.0"))
+	float TracerSpeed = 15000.0f;
+
+	/** 총알 그림이 나오는 총 메시 소켓. 없으면 판정 트레이스의 시작점(발밑 + 60 cm)에서 나온다. */
+	UPROPERTY(EditAnywhere, Category = "SH|Battle|View")
+	FName MuzzleSocketName = TEXT("MuzzleFlashSocket");
+
+	bool bShowVisionRays = false;
+	/** 기본 켜짐 — BP_Gun 의 bDrawDebugTrace 기본값(true)과 같게 두어 지금까지 보이던 화면을 유지한다. */
+	bool bShowAimRays = true;
 
 	UPROPERTY(EditAnywhere, Category = "SH|Battle")
 	TObjectPtr<USH_UnitDefinition> AllyDefinition;

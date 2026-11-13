@@ -46,7 +46,8 @@ private:
 
 	/** 카메라의 지금 자세에서 바라보는 바닥 점 · 거리 · 각도를 읽어 온다. */
 	void InitializeCameraRig(const ACameraActor& Camera);
-	void UpdateCameraInput(float DeltaTime);
+	/** GameDeltaTime 은 시간 배율이 곱해진 값이다. 안에서 실제 시간으로 되돌려 쓴다. */
+	void UpdateCameraInput(float GameDeltaTime);
 	void ApplyCameraRig() const;
 
 	UPROPERTY(EditDefaultsOnly, Category = "SH|Input")

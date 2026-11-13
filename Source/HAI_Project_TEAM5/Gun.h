@@ -32,12 +32,21 @@ struct FGunFireResult
 	UPROPERTY(BlueprintReadOnly, Category = "Gun")
 	float DamageApplied = 0.0f;
 
+	/** 트레이스 시작점(소유자 발밑 + MuzzleHeight). 총알 그림이 쓴다. */
+	UPROPERTY(BlueprintReadOnly, Category = "Gun")
+	FVector TraceStart = FVector::ZeroVector;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Gun")
 	FVector ImpactPoint = FVector::ZeroVector;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Gun")
 	TObjectPtr<AActor> HitActor = nullptr;
 };
+
+class AGun;
+
+/** ResolveShot 이 끝날 때마다 방송한다. 인게임의 총알 그림이 구독한다. 학습에는 구독자가 없다. */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnGunShotResolved, const AGun& /*Gun*/, const FGunFireResult& /*Result*/);
 
 UCLASS()
 class HAI_PROJECT_TEAM5_API AGun : public AActor
@@ -109,8 +118,11 @@ public:
 	/** 쿨다운을 소비하고 명중 대상을 추적하되 피해는 아직 적용하지 않는다. */
 	FGunFireResult PrepareShot();
 
-	/** PrepareShot 결과의 피해·사격 통계를 적용한다. */
+	/** PrepareShot 결과의 피해·사격 통계를 적용한다. 끝나면 OnShotResolved 를 방송한다. */
 	void ResolveShot(FGunFireResult& Result);
+
+	/** 발사가 처리될 때마다(명중 여부와 무관하게) 방송한다. 판정에는 관여하지 않는다. */
+	FOnGunShotResolved OnShotResolved;
 
 	/** 에피소드 리셋 — 쿨다운을 비운다. 빠뜨리면 부활 직후 몇 초간 발사 불가. */
 	UFUNCTION(BlueprintCallable, Category = "Gun")

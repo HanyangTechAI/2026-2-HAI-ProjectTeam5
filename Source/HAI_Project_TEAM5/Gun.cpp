@@ -131,6 +131,7 @@ FGunFireResult AGun::PrepareShot()
 
 	LastFireTime = World->GetTimeSeconds();
 	Result.bFired = true;
+	Result.TraceStart = Origin;
 
 	if (SpreadDegrees > 0.0f)
 	{
@@ -213,6 +214,8 @@ void AGun::ResolveShot(FGunFireResult& Result)
 	}
 #endif
 
+	// 판정이 다 끝난 뒤에 알린다. 구독자(총알 그림)는 결과를 읽기만 한다.
+	OnShotResolved.Broadcast(*this, Result);
 }
 
 FGunFireResult AGun::PullTrigger()

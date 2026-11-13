@@ -2,9 +2,12 @@
 
 #include "Battle/SH_BattleBoard.h"
 
+#include "Battle/SH_BulletTracer.h"
 #include "Battle/SH_EnemyLayout.h"
 #include "Battle/SH_UnitDefinition.h"
 #include "Combat/CombatStatsComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "RL/SH_VisionComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "Gun.h"
@@ -161,6 +164,18 @@ ASH_RLCharacter* ASH_BattleBoard::SpawnUnit(const USH_UnitDefinition& Definition
 		Unit->SpawnDefaultController();
 	}
 
+	// 관전 도구. 총은 유닛 BeginPlay(SpawnActor 안)에서 이미 만들어졌다.
+	// AddUObject 는 이 보드를 약하게 잡는다 — 보드가 먼저 사라져도 호출되지 않는다.
+	if (AGun* UnitGun = Unit->gun)
+	{
+		UnitGun->OnShotResolved.AddUObject(this, &ThisClass::HandleShotResolved);
+		UnitGun->bDrawDebugTrace = bShowAimRays;
+	}
+	if (Unit->Vision)
+	{
+		Unit->Vision->bDrawDebug = bShowVisionRays;
+	}
+
 	const int32 ActualTeam = Unit->CombatStats ? static_cast<int32>(Unit->CombatStats->TeamId) : -1;
 	if (ActualTeam != Team)
 	{
@@ -312,6 +327,54 @@ void ASH_BattleBoard::HandleCellRightClicked(const FIntPoint Cell)
 			SelectedCell.Reset();
 		}
 		BroadcastPlacement();
+	}
+}
+
+void ASH_BattleBoard::SetVisionRaysVisible(const bool bVisible)
+{
+	bShowVisionRays = bVisible;
+	for (ASH_RLCharacter* Unit : GetAllUnits())
+	{
+		if (Unit->Vision)
+		{
+			Unit->Vision->bDrawDebug = bVisible;
+		}
+	}
+}
+
+void ASH_BattleBoard::SetAimRaysVisible(const bool bVisible)
+{
+	bShowAimRays = bVisible;
+	for (ASH_RLCharacter* Unit : GetAllUnits())
+	{
+		if (AGun* UnitGun = Unit->gun)
+		{
+			UnitGun->bDrawDebugTrace = bVisible;
+		}
+	}
+}
+
+void ASH_BattleBoard::HandleShotResolved(const AGun& Gun, const FGunFireResult& Result)
+{
+	UWorld* World = GetWorld();
+	if (!TracerClass || !World || !Result.bFired)
+	{
+		return;
+	}
+
+	// 보이는 시작점은 총구, 끝점은 판정이 맞힌 곳(못 맞혔으면 사거리 끝).
+	// ★ 총구와 판정 시작점은 수십 cm 떨어져 있어 선이 판정 선과 완전히 같지는 않다 — 그림이라 괜찮다.
+	FVector Start = Result.TraceStart;
+	if (Gun.Mesh && Gun.Mesh->DoesSocketExist(MuzzleSocketName))
+	{
+		Start = Gun.Mesh->GetSocketLocation(MuzzleSocketName);
+	}
+
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	if (ASH_BulletTracer* Tracer = World->SpawnActor<ASH_BulletTracer>(TracerClass, Start, FRotator::ZeroRotator, Params))
+	{
+		Tracer->Launch(Start, Result.ImpactPoint, TracerSpeed);
 	}
 }
 

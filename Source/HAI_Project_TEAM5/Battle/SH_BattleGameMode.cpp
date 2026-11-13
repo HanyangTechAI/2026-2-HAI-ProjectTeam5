@@ -8,6 +8,7 @@
 #include "Battle/SH_UnitDefinition.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Kismet/GameplayStatics.h"
 
 ASH_BattleGameMode::ASH_BattleGameMode()
 {
@@ -58,6 +59,12 @@ void ASH_BattleGameMode::BeginPlay()
 	{
 		UE_LOG(LogTemp, Error, TEXT("[SH_BattleGameMode] 레벨에 켜진(bActiveBoard) ASH_BattleBoard 가 없다."));
 	}
+}
+
+void ASH_BattleGameMode::SetGameSpeed(const float Speed)
+{
+	GameSpeed = FMath::Clamp(Speed, MinGameSpeed, MaxGameSpeed);
+	UGameplayStatics::SetGlobalTimeDilation(this, GameSpeed);
 }
 
 void ASH_BattleGameMode::SetPhase(const ESHBattlePhase NewPhase)

@@ -174,12 +174,16 @@ void ASH_BattlePlayerController::InitializeCameraRig(const ACameraActor& Camera)
 	ApplyCameraRig();
 }
 
-void ASH_BattlePlayerController::UpdateCameraInput(const float DeltaTime)
+void ASH_BattlePlayerController::UpdateCameraInput(const float GameDeltaTime)
 {
 	if (!ViewCamera.IsValid())
 	{
 		return;
 	}
+
+	// ★ PlayerTick 의 DeltaTime 은 전역 시간 배율이 곱해진 게임 시간이다. 배속 0.1 에서 그대로 쓰면
+	//   카메라도 10배 느려진다. 배율로 나눠 실제 시간으로 되돌린다(관전 중에도 카메라는 평소 속도).
+	const float DeltaTime = GameDeltaTime / FMath::Max(GetActorTimeDilation(), UE_KINDA_SMALL_NUMBER);
 
 	// IsInputKeyDown 으로 직접 읽는다 — 입력 에셋이 필요 없고 배치용 매핑과 겹치지 않는다(ASH_SpectatorPawn 과 같은 방식).
 	auto Axis = [this](const FKey& Positive, const FKey& Negative) -> float

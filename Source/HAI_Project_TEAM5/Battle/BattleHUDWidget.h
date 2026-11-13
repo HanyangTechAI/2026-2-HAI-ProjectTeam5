@@ -10,6 +10,8 @@
 class ASH_BattleBoard;
 class ASH_BattleGameMode;
 class UButton;
+class UCheckBox;
+class USlider;
 class UTextBlock;
 
 /**
@@ -34,8 +36,19 @@ private:
 	UFUNCTION()
 	void HandleReplayClicked();
 
+	// 슬라이더 · 체크박스의 이벤트도 동적 델리게이트다.
+	UFUNCTION()
+	void HandleSpeedChanged(float Value);
+
+	UFUNCTION()
+	void HandleVisionRaysChanged(bool bIsChecked);
+
+	UFUNCTION()
+	void HandleAimRaysChanged(bool bIsChecked);
+
 	void HandlePhaseChanged(ESHBattlePhase NewPhase);
 	void HandlePlacementChanged(int32 Placed, int32 Required);
+	void RefreshSpeedText(float Speed);
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UButton> StartButton;
@@ -48,6 +61,21 @@ private:
 
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> ResultText;
+
+	/** 좌측 상단 배속 슬라이더. 범위는 코드가 게임모드의 Min/MaxGameSpeed 로 맞춘다. */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<USlider> SpeedSlider;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTextBlock> SpeedText;
+
+	/** 시야 레이 표시. 기본 꺼짐. */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UCheckBox> VisionRaysCheckBox;
+
+	/** 조준 레이 표시. 기본 꺼짐. */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UCheckBox> AimRaysCheckBox;
 
 	TWeakObjectPtr<ASH_BattleGameMode> GameMode;
 	TWeakObjectPtr<ASH_BattleBoard> Board;

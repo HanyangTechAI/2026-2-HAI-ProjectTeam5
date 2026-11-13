@@ -32,6 +32,17 @@ public:
 	/** UI 의 다시 배치 버튼. */
 	void RequestReturnToPlacement();
 
+	/**
+	 *  게임 배속. [MinGameSpeed, MaxGameSpeed] 로 잘라 전역 시간 배율로 건다.
+	 *  유닛 이동 · 애니메이션 · 정책 결정(20 Hz 는 게임 시간 기준) · 총알 그림이 모두 같이 느려진다.
+	 *  ★ 카메라는 실제 시간으로 움직인다(ASH_BattlePlayerController::UpdateCameraInput).
+	 */
+	void SetGameSpeed(float Speed);
+	[[nodiscard]] float GetGameSpeed() const { return GameSpeed; }
+
+	static constexpr float MinGameSpeed = 0.1f;
+	static constexpr float MaxGameSpeed = 1.0f;
+
 	[[nodiscard]] ESHBattlePhase GetPhase() const { return Phase; }
 	[[nodiscard]] ESHRoundEnd GetLastResult() const { return LastResult; }
 
@@ -62,6 +73,8 @@ private:
 	TObjectPtr<ASH_BattleBrain> Brain;
 
 	mutable TWeakObjectPtr<ASH_BattleBoard> CachedBoard;
+
+	float GameSpeed = 1.0f;
 
 	ESHBattlePhase Phase = ESHBattlePhase::Placement;
 	ESHRoundEnd LastResult = ESHRoundEnd::None;
