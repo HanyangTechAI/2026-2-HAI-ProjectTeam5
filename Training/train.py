@@ -413,6 +413,9 @@ class LogTail:
     """언리얼 로그 파일에서 새 줄만 읽어 학습 리포트 · 에러를 화면에 보여 준다."""
 
     KEEP = re.compile(r"\[SH_CombatTrainer\]|\[SH_Experiment\]|Error:|Fatal")
+    # 엔진 실험 플러그인(Experimental/Toolsets)의 init_unreal.py 가 -game 에서 에디터 전용 클래스를 못 찾아 내는
+    # LogPython 오류. 학습과 무관해서 화면에는 보이지 않게 한다(언리얼 로그 파일에는 그대로 남는다).
+    SKIP = re.compile(r"LogPython:")
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -427,7 +430,7 @@ class LogTail:
         complete = chunk.rfind(b"\n") + 1      # 마지막 줄이 덜 쓰였으면 다음에 읽는다
         self.offset += complete
         for raw in chunk[:complete].decode("utf-8", errors="replace").splitlines():
-            if self.KEEP.search(raw):
+            if self.KEEP.search(raw) and not self.SKIP.search(raw):
                 print("    " + re.sub(r"^\[[^\]]*\]\[[^\]]*\]", "", raw).strip(), flush=True)
 
 
@@ -440,8 +443,8 @@ def build_command(ue_cmd: Path, run_dir: Path, config: dict, resume: Path | None
     command += config["ue_args"]
     if resume is not None:
         command.append(f"-SHResume={resume.as_posix()}")
-    if session_seconds is not None:
-        command.append(f"-SHTrainSeconds={int(session_seconds)}")
+    # ★ 항상 넘긴다. 0 = 제한 없음. 넘기지 않으면 레벨(Lvl_SHTrain)의 트레이너 액터에 남은 값(예: 시험용 300초)이 적용된다.
+    command.append(f"-SHTrainSeconds={0 if session_seconds is None else max(1, int(session_seconds))}")
     return command
 
 

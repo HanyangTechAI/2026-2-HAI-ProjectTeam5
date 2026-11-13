@@ -183,9 +183,11 @@ void ASH_CombatTrainer::BeginPlay()
 	//   헤드리스 실행에서 길이만 바꾸는 일이 잦으므로 커맨드라인으로 받는다.
 	//
 	//   UnrealEditor-Cmd.exe <uproject> /Game/RL/Lvl_SHTrain -game -SHTrainSeconds=5400
-	float OverrideSeconds = 0.0f;
+	//   ★ -SHTrainSeconds=0 은 "제한 없음" 으로 덮어쓴다. 예전에는 0 을 무시해서, 레벨의 트레이너 액터에
+	//   시험용 한도(예: 300초)가 남아 있으면 명령줄로는 없앨 방법이 없었다(Training/train.py 가 항상 넘긴다).
+	float OverrideSeconds = -1.0f;
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHTrainSeconds="), OverrideSeconds)
-		&& OverrideSeconds > 0.0f)
+		&& OverrideSeconds >= 0.0f)
 	{
 		MaxWallClockSeconds = OverrideSeconds;
 	}
