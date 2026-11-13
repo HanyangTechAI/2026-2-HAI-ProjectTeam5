@@ -3,6 +3,7 @@
 #include "Base_Character.h"
 #include "Combat/CombatStatsComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "AIController.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -186,6 +187,50 @@ namespace
 			Test.TestEqual(FString::Printf(TEXT("%s: shot %d hostile hit"), Context, Index), Actual.bShotHitHostile[Index], Expected.bShotHitHostile[Index]);
 		}
 	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDeathMeshRotationResetTest,
+	"HAI.Combat.DeathMeshRotationReset",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+
+bool FDeathMeshRotationResetTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = GWorld;
+	if (!TestNotNull(TEXT("Active Unreal world"), World))
+	{
+		return false;
+	}
+
+	TArray<FCombatShotFixture> Fixtures;
+	Fixtures.SetNum(1);
+	if (!SpawnCombatShotFixture(*this, World, FVector(180000.0f, 100000.0f, 1000.0f),
+		0.0f, 0, 100.0f, 10.0f, Fixtures[0]))
+	{
+		DestroyCombatShotFixtures(World, Fixtures);
+		return false;
+	}
+
+	ABase_Character* Unit = Fixtures[0].Unit;
+	const FRotator AliveRotation = Unit->GetMesh()->GetRelativeRotation();
+	const FRotator DeadRotation = AliveRotation + FRotator(90.0f, 0.0f, 0.0f);
+
+	Unit->CombatStats->ApplyDamage(Unit->CombatStats->MaxHP, nullptr);
+	TestTrue(TEXT("Death rotates mesh by 90 degrees"),
+		Unit->GetMesh()->GetRelativeRotation().Equals(DeadRotation));
+	TestTrue(TEXT("Death rotation remains until reset"),
+		Unit->GetMesh()->GetRelativeRotation().Equals(DeadRotation));
+
+	Unit->ResetForNewMatch();
+	TestTrue(TEXT("Placement reset restores alive mesh rotation"),
+		Unit->GetMesh()->GetRelativeRotation().Equals(AliveRotation));
+
+	Unit->CombatStats->ApplyDamage(Unit->CombatStats->MaxHP, nullptr);
+	TestTrue(TEXT("Second battle death rotates mesh again"),
+		Unit->GetMesh()->GetRelativeRotation().Equals(DeadRotation));
+
+	DestroyCombatShotFixtures(World, Fixtures);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

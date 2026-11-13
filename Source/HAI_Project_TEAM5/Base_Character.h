@@ -95,4 +95,6 @@ protected:
 	
 	UPROPERTY(EditAnywhere)
 	TSubclassOf<AGun> GunClass;
+
+	FRotator AliveMeshRelativeRotation = FRotator::ZeroRotator;
 };

@@ -33,6 +33,7 @@ ABase_Character::ABase_Character()
 
 void ABase_Character::BeginPlay()
 {
+	AliveMeshRelativeRotation = GetMesh()->GetRelativeRotation();
 	Super::BeginPlay();
 
 	GetMesh()->HideBoneByName("weapon_r",EPhysBodyOp::PBO_None);
@@ -59,6 +60,7 @@ void ABase_Character::HandleDeath(AActor* Victim, AActor* Causer)
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	GetCharacterMovement()->StopMovementImmediately();
 	GetCharacterMovement()->DisableMovement();
+	GetMesh()->SetRelativeRotation(AliveMeshRelativeRotation + FRotator(90.0f, 0.0f, 0.0f));
 }
 
 void ABase_Character::ResetForNewMatch()
@@ -77,6 +79,7 @@ void ABase_Character::ResetForNewMatch()
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 	GetCharacterMovement()->StopMovementImmediately();
+	GetMesh()->SetRelativeRotation(AliveMeshRelativeRotation);
 
 	// ★ 여기서 StopFocus() 를 부르면 안 된다.
 	//   StopFocus 는 bOrientRotationToMovement=true / bUseControllerDesiredRotation=false 로
