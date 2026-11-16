@@ -8,8 +8,10 @@
 #include "RL/SH_Arena.h"
 #include "SH_BattleBoard.generated.h"
 
+class AController;
 class AGun;
 class ASH_BulletTracer;
+class UBehaviorTree;
 class ASH_RLCharacter;
 struct FGunFireResult;
 class USH_EnemyLayout;
@@ -76,8 +78,27 @@ public:
 	/** 결과 화면 뒤 — 유닛을 되살려 각자의 칸으로 돌려놓는다. 배치는 유지된다. */
 	void ReturnToPlacement();
 
-	/** 정책이 조종할 유닛 전부(양 팀). */
+	/** 양 팀 유닛 전부. */
 	[[nodiscard]] TArray<ASH_RLCharacter*> GetAllUnits() const;
+
+	/** 한 팀(0 = 아군, 1 = 적)의 유닛. */
+	[[nodiscard]] TArray<ASH_RLCharacter*> GetTeamUnits(int32 Team) const;
+
+	//~ 팀별 조종 (RL 모델 / 행동 트리) ---------------------------------------
+
+	/**
+	 *  한 팀의 컨트롤러를 바꿔 끼운다. 이미 맞는 컨트롤러면 그대로 둔다.
+	 *    행동 트리 → BTControllerClass 를 스폰해 빙의
+	 *    RL 모델   → 유닛 BP 의 AIControllerClass(ASH_RLBotController) 로 되돌림
+	 *  ★ 배치 단계에서만 부른다(전투 시작 직전). 유닛 · 총 · 학습 에이전트 등록은 폰 기준이라 영향이 없다.
+	 */
+	void ApplyTeamControl(int32 Team, bool bBehaviorTree, TSubclassOf<AController> BTControllerClass);
+
+	/** 행동 트리 컨트롤러를 가진 유닛의 트리를 시작한다. 하나라도 실패하면 false. */
+	[[nodiscard]] bool StartBehaviorTrees(UBehaviorTree* Tree);
+
+	/** 행동 트리를 모두 멈춘다(전투 종료 · 다시 배치). */
+	void StopBehaviorTrees();
 
 	[[nodiscard]] const USH_UnitDefinition* GetAllyDefinition() const;
 

@@ -357,6 +357,11 @@ void ASH_CombatTrainer::BeginPlay()
 		OpponentSwapSeconds = OverrideSwap;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("SHOpponentPool="), OpponentPoolDir);
+	int32 OverridePoolOnly = -1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHOpponentPoolOnly="), OverridePoolOnly) && (OverridePoolOnly == 0 || OverridePoolOnly == 1))
+	{
+		bOpponentPoolOnly = (OverridePoolOnly == 1);
+	}
 	FPaths::NormalizeDirectoryName(OpponentPoolDir);   // 끝의 '/' 가 있으면 폴더 이름(파일 접두어)을 못 읽는다
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHEvalOpponent="), EvalOpponentDir) && !EvalOpponentDir.IsEmpty())
 	{
@@ -883,7 +888,9 @@ void ASH_CombatTrainer::Assemble()
 			MaxWallClockSeconds > 0.0f ? *FormatHoursMinutes(MaxWallClockSeconds) : TEXT("없음"),
 			SnapshotIntervalSeconds > 0.0f ? *FormatHoursMinutes(SnapshotIntervalSeconds) : TEXT("끔 (종료 시에만)"),
 			bSelfPlay ? TEXT("켬") : TEXT("끔"),
-			bOpponentMix ? *FString::Printf(TEXT("켬 (스냅샷 %d / 봇 %d 아레나)"), MixSnapshotArenas, MixBotArenas) : TEXT("끔"),
+			bOpponentMix ? *FString::Printf(TEXT("켬 (스냅샷 %d / 봇 %d 아레나, 풀 %s%s)"), MixSnapshotArenas, MixBotArenas,
+				OpponentPoolDir.IsEmpty() ? TEXT("이번 실행 스냅샷") : *FString::Printf(TEXT("`%s`"), *OpponentPoolDir),
+				bOpponentPoolOnly ? TEXT(" 만") : (OpponentPoolDir.IsEmpty() ? TEXT("") : TEXT(" + 이번 실행 스냅샷"))) : TEXT("끔"),
 			Units.Num(), Interactor->GetObservationVectorSize(), TrainerSettings.MaximumRecordedStepsPerIteration,
 			TrainingEnvironment->OutcomeReward, TrainingEnvironment->TeamSpirit,
 			(Arenas.Num() > 0 && Arenas[0].IsValid() && Arenas[0]->bTimeoutIsLossForBoth) ? TEXT("양쪽 패배") : TEXT("무승부"),
@@ -1277,7 +1284,8 @@ bool ASH_CombatTrainer::LoadOpponentSnapshot(const FString& Directory)
 void ASH_CombatTrainer::RefreshOpponentPool()
 {
 	// 이 실행이 저장한 스냅샷 + 지정한 풀 폴더.
-	TArray<FString> Candidates = RunSnapshotDirs;
+	// bOpponentPoolOnly 면 이번 실행의 스냅샷은 넣지 않는다 — 고른 모델하고만 싸운다.
+	TArray<FString> Candidates = bOpponentPoolOnly ? TArray<FString>() : RunSnapshotDirs;
 	if (!OpponentPoolDir.IsEmpty())
 	{
 		// 풀 폴더 자체, 하위 폴더, 하위의 하위 폴더까지 본다

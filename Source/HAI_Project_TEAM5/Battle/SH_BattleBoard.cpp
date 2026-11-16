@@ -2,6 +2,7 @@
 
 #include "Battle/SH_BattleBoard.h"
 
+#include "Battle/AI/SH_BTBotController.h"
 #include "Battle/SH_BulletTracer.h"
 #include "Battle/SH_EnemyLayout.h"
 #include "Battle/SH_UnitDefinition.h"
@@ -419,6 +420,7 @@ void ASH_BattleBoard::ReturnToPlacement()
 {
 	bBattleRunning = false;
 	bPlacementOpen = true;
+	StopBehaviorTrees();   // 이미 멈췄어야 하지만, 배치 중에 트리가 돌면 유닛이 칸을 벗어난다
 
 	// 아레나 Tick 은 이미 끝난 라운드에서 아무것도 하지 않는다. 다음 ResetRound 까지 판정이 멈춰 있다.
 	auto Restore = [this](const FSHPlacement& Placement, const int32 Team)
@@ -452,6 +454,91 @@ TArray<ASH_RLCharacter*> ASH_BattleBoard::GetAllUnits() const
 	return Units;
 }
 
+TArray<ASH_RLCharacter*> ASH_BattleBoard::GetTeamUnits(const int32 Team) const
+{
+	TArray<ASH_RLCharacter*> Units;
+	const FSHPlacement& Placement = (Team == 0) ? AllyPlacement : EnemyPlacement;
+	Units.Reserve(Placement.Num());
+	Placement.ForEach([&Units](const FIntPoint, ASH_RLCharacter& Unit) { Units.Add(&Unit); });
+	return Units;
+}
+
+void ASH_BattleBoard::ApplyTeamControl(const int32 Team, const bool bBehaviorTree, const TSubclassOf<AController> BTControllerClass)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	for (ASH_RLCharacter* Unit : GetTeamUnits(Team))
+	{
+		AController* Current = Unit->GetController();
+		const bool bHasBTController = Current && Current->IsA<ASH_BTBotController>();
+		if (bHasBTController == bBehaviorTree)
+		{
+			continue;   // 이미 원하는 쪽이다
+		}
+
+		// 조준 방향(컨트롤 회전)을 새 컨트롤러로 넘겨야 바꾼 순간 유닛이 엉뚱한 곳을 보지 않는다.
+		const FRotator Aim = Current ? Current->GetControlRotation() : Unit->GetActorRotation();
+		if (Current)
+		{
+			Current->UnPossess();
+			Current->Destroy();
+		}
+
+		if (bBehaviorTree)
+		{
+			FActorSpawnParameters Params;
+			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			Params.Owner = this;
+			if (AController* New = World->SpawnActor<AController>(BTControllerClass, Unit->GetActorTransform(), Params))
+			{
+				New->Possess(Unit);
+			}
+		}
+		else
+		{
+			Unit->SpawnDefaultController();   // 유닛 BP 의 AIControllerClass(ASH_RLBotController)
+		}
+
+		if (AController* New = Unit->GetController())
+		{
+			New->SetControlRotation(Aim);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[SH_BattleBoard] %s 의 컨트롤러를 바꾸지 못했다(팀 %d, %s)."),
+				*Unit->GetName(), Team, bBehaviorTree ? TEXT("행동 트리") : TEXT("RL 모델"));
+		}
+	}
+}
+
+bool ASH_BattleBoard::StartBehaviorTrees(UBehaviorTree* Tree)
+{
+	bool bAllStarted = true;
+	for (ASH_RLCharacter* Unit : GetAllUnits())
+	{
+		if (ASH_BTBotController* Bot = Cast<ASH_BTBotController>(Unit->GetController()))
+		{
+			bAllStarted &= Bot->StartCombat(Tree);
+		}
+	}
+	return bAllStarted;
+}
+
+void ASH_BattleBoard::StopBehaviorTrees()
+{
+	for (ASH_RLCharacter* Unit : GetAllUnits())
+	{
+		if (ASH_BTBotController* Bot = Cast<ASH_BTBotController>(Unit->GetController()))
+		{
+			Bot->StopCombat();
+		}
+	}
+}
+
 void ASH_BattleBoard::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);      // 아레나의 라운드 판정 · 축소 구역
@@ -466,6 +553,7 @@ void ASH_BattleBoard::Tick(const float DeltaSeconds)
 	if (bBattleRunning && IsRoundOver())
 	{
 		bBattleRunning = false;
+		StopBehaviorTrees();   // 행동 트리 팀은 여기서 멈춘다(RL 팀은 게임모드가 정책을 멈춘다)
 
 		// ★ 정책이 멈춰도 유닛의 Pending 입력은 남아서 Tick 이 계속 적용한다. 비우지 않으면 결과 화면에서
 		//   생존자가 마지막 방향으로 계속 걷는다.

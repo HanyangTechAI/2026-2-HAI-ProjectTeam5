@@ -27,9 +27,9 @@ class HAI_PROJECT_TEAM5_API ASH_BattleBrain : public AActor
 public:
 	ASH_BattleBrain();
 
-	/** 유닛을 에이전트로 등록하고 정책을 불러온다. 실패하면 false — 이유는 로그에.
+	/** 유닛을 에이전트로 등록하고 정책을 불러온다. 실패하면 false — 이유는 OutError(화면에 보여 줄 문장)와 로그에.
 	 *  @param SnapshotDirectory 절대 경로 또는 프로젝트 폴더 기준 상대 경로. */
-	[[nodiscard]] bool Assemble(const TArray<ASH_RLCharacter*>& Units, const FString& SnapshotDirectory);
+	[[nodiscard]] bool Assemble(const TArray<ASH_RLCharacter*>& Units, const FString& SnapshotDirectory, FString& OutError);
 
 	/** 정책 메모리를 비우고 추론을 시작한다. */
 	void StartThinking();
@@ -38,7 +38,7 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 
 private:
-	[[nodiscard]] bool LoadSnapshot(const FString& Directory);
+	[[nodiscard]] bool LoadSnapshot(const FString& Directory, FString& OutError);
 
 	UPROPERTY(VisibleAnywhere, Category = "SH|Battle")
 	TObjectPtr<ULearningAgentsManager> Manager;

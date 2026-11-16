@@ -256,6 +256,15 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SH|RL|OpponentMix")
 	FString OpponentPoolDir;
 
+	/**
+	 *  켜면 상대 풀에 **OpponentPoolDir 만** 넣는다(이번 실행이 저장한 스냅샷은 넣지 않는다).
+	 *  -SHOpponentPoolOnly=1. "고른 모델 하나와만 학습" 에 쓴다(Training/train.py 의 상대 = 고정 모델):
+	 *  -SHOpponentMix=1 -SHMixSnapshot=999 -SHMixBot=0 -SHOpponentPool=<그 스냅샷> -SHOpponentPoolOnly=1.
+	 *  ★ 끄면(기본) 첫 스냅샷 뒤부터 이번 실행의 자기 스냅샷도 상대로 섞인다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|OpponentMix")
+	bool bOpponentPoolOnly = false;
+
 	/** 스크립트 봇 반응 지연을 라운드마다 이 범위에서 무작위로 뽑는다(초).
 	 *  ★ 학습된 좌선회 66% 는 봇의 0.25초 고정 조준점 갱신을 공략한 것이었다(TODO 1A). */
 	UPROPERTY(EditAnywhere, Category = "SH|RL|OpponentMix")

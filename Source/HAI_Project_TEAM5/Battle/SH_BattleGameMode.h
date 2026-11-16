@@ -10,8 +10,11 @@
 
 class ASH_BattleBoard;
 class ASH_BattleBrain;
+class ASH_BTBotController;
+class UBehaviorTree;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FSHOnPhaseChanged, ESHBattlePhase);
+DECLARE_MULTICAST_DELEGATE_OneParam(FSHOnStartFailed, const FString& /*Reason*/);
 
 /**
  *  게임 흐름. 단계 전이는 SetPhase 한 곳에서만 일어나고, 바뀔 때마다 UI 에 알린다.
@@ -43,6 +46,25 @@ public:
 	static constexpr float MinGameSpeed = 0.1f;
 	static constexpr float MaxGameSpeed = 1.0f;
 
+	/**
+	 *  팀(0 = 아군, 1 = 적)을 무엇이 조종할지. 배치 단계에서만 바뀐다.
+	 *  행동 트리를 고르려면 CombatBehaviorTree 가 지정돼 있어야 한다 — 아니면 false 를 돌려주고 바꾸지 않는다.
+	 */
+	bool SetTeamControl(int32 Team, ESHTeamControl Control);
+	[[nodiscard]] ESHTeamControl GetTeamControl(int32 Team) const { return TeamControl[Team == 0 ? 0 : 1]; }
+	[[nodiscard]] bool HasBehaviorTree() const { return CombatBehaviorTree != nullptr; }
+
+	/**
+	 *  RL 팀이 쓰는 정책 스냅샷 폴더(프로젝트 폴더 기준 상대 경로, 예: Training/START_11_13/cum017h06m).
+	 *  고르지 않았으면 보드 유닛 정의(DA_Unit_Shooter)의 기본값. 배치 단계에서만 바뀐다.
+	 *  ★ 양 팀이 RL 이고 폴더가 다르면 팀마다 정책 실행기(ASH_BattleBrain)를 따로 띄운다 — 모델끼리 비교할 수 있다.
+	 */
+	[[nodiscard]] FString GetTeamPolicy(int32 Team) const;
+	bool SetTeamPolicy(int32 Team, const FString& Directory);
+
+	/** 시작 버튼을 눌렀는데 전투를 시작하지 못했을 때. HUD 가 이유를 보여 준다. */
+	FSHOnStartFailed OnStartFailed;
+
 	[[nodiscard]] ESHBattlePhase GetPhase() const { return Phase; }
 	[[nodiscard]] ESHRoundEnd GetLastResult() const { return LastResult; }
 
@@ -64,13 +86,28 @@ protected:
 private:
 	void SetPhase(ESHBattlePhase NewPhase);
 	void HandleBattleEnded(ESHRoundEnd Result);
-	void DestroyBrain();
+	void DestroyBrains();
+	void FailStart(const FString& Reason);
 
 	UPROPERTY(EditDefaultsOnly, Category = "SH|Battle")
 	TSubclassOf<ASH_BattleBrain> BrainClass;
 
+	/** 이번 전투의 정책 실행기. RL 팀이 없으면 0개, 양 팀이 같은 모델이면 1개, 다른 모델이면 2개. */
 	UPROPERTY()
-	TObjectPtr<ASH_BattleBrain> Brain;
+	TArray<TObjectPtr<ASH_BattleBrain>> Brains;
+
+	/** 비어 있으면 유닛 정의의 기본값. */
+	FString TeamPolicy[2];
+
+	/** "행동 트리" 팀이 쓰는 트리(BT_SHCombat). BP_BattleGameMode 에서 지정한다(Docs/BehaviorTreeGuide.md). */
+	UPROPERTY(EditDefaultsOnly, Category = "SH|Battle|AI")
+	TObjectPtr<UBehaviorTree> CombatBehaviorTree;
+
+	/** "행동 트리" 팀 유닛에 끼울 컨트롤러. */
+	UPROPERTY(EditDefaultsOnly, Category = "SH|Battle|AI")
+	TSubclassOf<ASH_BTBotController> BTControllerClass;
+
+	ESHTeamControl TeamControl[2] = { ESHTeamControl::RLModel, ESHTeamControl::RLModel };
 
 	mutable TWeakObjectPtr<ASH_BattleBoard> CachedBoard;
 

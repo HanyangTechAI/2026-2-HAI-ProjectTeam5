@@ -38,11 +38,16 @@ BRANCH = "preMerge"
 REMOTE = "origin"
 
 # 2026-10-15 ~ 10-25 의 긴 학습(누적 16시간)과 같은 옵션. run.json 에 저장되어 이어 학습할 때도 그대로 쓰인다.
-DEFAULT_UE_ARGS = ["-SHSelfPlay=1", "-SHRoundRules=1", "-SHOutcome=0", "-SHReportInterval=60"]
+# 학습 상대(-SHSelfPlay 등)는 여기 넣지 않는다 — run.json 의 "opponent" 에서 만든다(opponent_args).
+DEFAULT_UE_ARGS = ["-SHRoundRules=1", "-SHOutcome=0", "-SHReportInterval=60"]
+
+# 학습 상대를 정하는 옵션. run.json 의 "opponent" 로만 정한다(ue_args 에 남은 옛 값은 실행할 때 걸러 낸다).
+OPPONENT_PREFIXES = ("-SHSelfPlay=", "-SHOpponentMix=", "-SHMixSnapshot=", "-SHMixBot=", "-SHOpponentPool=",
+                     "-SHOpponentPoolOnly=", "-SHOpponentSwap=")
 
 # 이 실행기가 직접 정하는 옵션. run.json 의 추가 옵션으로 덮어쓰면 실행기가 망가지므로 막는다.
 RESERVED_PREFIXES = ("-SHSnapshotRoot=", "-SHSnapshotFlat=", "-SHSnapshotInterval=", "-SHResume=",
-                     "-SHTrainSeconds=", "-SHEval=", "-abslog=")
+                     "-SHTrainSeconds=", "-SHEval=", "-abslog=") + OPPONENT_PREFIXES
 
 SNAPSHOT_DIR_RE = re.compile(r"^cum(\d{3})h(\d{2})m(?:_\d+)?$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
@@ -440,7 +445,10 @@ def build_command(ue_cmd: Path, run_dir: Path, config: dict, resume: Path | None
     command = [str(ue_cmd), str(UPROJECT), TRAIN_MAP, "-game", "-log", f"-abslog={log_path.as_posix()}",
                "-unattended", "-nosplash", "-nullrhi", "-nosound",
                f"-SHSnapshotRoot={run_dir.as_posix()}", "-SHSnapshotFlat=1", f"-SHSnapshotInterval={interval}"]
-    command += config["ue_args"]
+    # 옛 run.json 의 ue_args 에 남은 상대 옵션(-SHSelfPlay=1 등)은 빼고, "opponent" 에서 다시 만든다.
+    # ★ 같은 옵션이 두 번 있으면 언리얼(FParse::Value)은 앞의 것을 쓴다 — 섞이면 고른 상대가 무시된다.
+    command += [a for a in config["ue_args"] if not a.startswith(OPPONENT_PREFIXES)]
+    command += opponent_args(opponent_of(config))
     if resume is not None:
         command.append(f"-SHResume={resume.as_posix()}")
     # ★ 항상 넘긴다. 0 = 제한 없음. 넘기지 않으면 레벨(Lvl_SHTrain)의 트레이너 액터에 남은 값(예: 시험용 300초)이 적용된다.
@@ -461,17 +469,36 @@ def stop_unreal(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def train(name: str, config: dict, git_mode: str, session_hours: float | None) -> None:
+def newest_file_time(snapshot_dir: Path) -> float:
+    return max((f.stat().st_mtime for f in snapshot_dir.iterdir() if f.is_file()), default=0.0)
+
+
+def train(name: str, config: dict, git_mode: str, session_hours: float | None, start_point: str | None = None) -> None:
+    """start_point: None = 이 학습의 최신 스냅샷(없으면 run.json 의 시작 정책), "scratch" = 처음부터, 그 밖 = 스냅샷 폴더."""
     run_dir = TRAINING_DIR / name
     ue_cmd = find_unreal_cmd()
-    session_end = time.time() + session_hours * 3600 if session_hours else None
+    session_start = time.time()
+    session_end = session_start + session_hours * 3600 if session_hours else None
     quick_crashes = 0
+
+    def pick_resume() -> Path | None:
+        # ★ 언리얼이 죽어 다시 시작할 때는 **이번 실행이 저장한 스냅샷 중 가장 최근** 부터 잇는다.
+        #   그래야 예전 스냅샷에서 다시 시작한 경우(시작 지점 선택)에도 원래의 최신 스냅샷으로 되돌아가지 않는다.
+        saved = [d for d in list_snapshots(run_dir) if newest_file_time(d) >= session_start]
+        if saved:
+            return max(saved, key=newest_file_time)
+        if start_point == "scratch":
+            return None
+        if start_point:
+            return Path(absolute_posix(start_point))
+        latest = latest_snapshot(run_dir)
+        if latest is None and config.get("initial_snapshot"):
+            return ROOT / config["initial_snapshot"]
+        return latest
 
     with run_lock(run_dir):
         while True:
-            resume = latest_snapshot(run_dir)
-            if resume is None and config.get("initial_snapshot"):
-                resume = ROOT / config["initial_snapshot"]
+            resume = pick_resume()
             remaining = None if session_end is None else max(0.0, session_end - time.time())
             if remaining is not None and remaining < 60:
                 say("정한 학습 시간을 다 썼다.")
@@ -556,7 +583,14 @@ def load_config(name: str) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
-def create_config(name: str, initial: str | None, note: str, extra_args: list[str], interval_minutes: float) -> dict:
+def save_config(config: dict) -> None:
+    run_dir = TRAINING_DIR / config["name"]
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def create_config(name: str, initial: str | None, note: str, extra_args: list[str], interval_minutes: float,
+                  opponent: dict | None = None) -> dict:
     bad = [a for a in extra_args if a.startswith(RESERVED_PREFIXES)]
     if bad:
         raise ValueError(f"이 옵션은 실행기가 정한다: {' '.join(bad)}")
@@ -567,12 +601,129 @@ def create_config(name: str, initial: str | None, note: str, extra_args: list[st
         "ue_args": DEFAULT_UE_ARGS + list(extra_args),
         "interval_minutes": interval_minutes,
         "initial_snapshot": initial,
+        "opponent": opponent or {"kind": "self"},
         "note": note,
     }
-    run_dir = TRAINING_DIR / name
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "run.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    save_config(config)
     return config
+
+
+# --- 학습 상대 --------------------------------------------------------------------
+#
+# run.json 의 "opponent":
+#   {"kind": "self"}                                   같은 정책끼리(self-play) — 기본
+#   {"kind": "bot"}                                    스크립트 봇
+#   {"kind": "model", "snapshot": "<스냅샷 폴더>"}       고른 모델 하나와만(모든 아레나)
+#   {"kind": "mix", "snapshot_arenas": 6, "bot_arenas": 2, "pool": "<폴더>" | null}
+#                                                      아레나를 self-play / 과거 스냅샷 / 봇으로 나눈다.
+#                                                      스냅샷 상대는 이 학습의 스냅샷(+ pool)에서 10분마다 바꾼다.
+
+def opponent_of(config: dict) -> dict:
+    """run.json 의 학습 상대. "opponent" 가 없는 옛 run.json 은 ue_args 에서 추정한다."""
+    if config.get("opponent"):
+        return config["opponent"]
+    args = config.get("ue_args", [])
+    if "-SHSelfPlay=0" in args:
+        return {"kind": "bot"}
+    if "-SHOpponentMix=1" in args:
+        pool = next((a.split("=", 1)[1] for a in args if a.startswith("-SHOpponentPool=")), None)
+        return {"kind": "mix", "snapshot_arenas": 6, "bot_arenas": 2, "pool": pool}
+    return {"kind": "self"}
+
+
+def absolute_posix(path_text: str) -> str:
+    """★ 언리얼은 상대 경로를 자기 작업 폴더(엔진 Binaries) 기준으로 읽는다 — 항상 절대 경로로 넘긴다."""
+    path = Path(path_text)
+    return (path if path.is_absolute() else ROOT / path).resolve().as_posix()
+
+
+def opponent_args(opponent: dict) -> list[str]:
+    kind = opponent.get("kind", "self")
+    if kind == "bot":
+        return ["-SHSelfPlay=0"]
+    if kind == "model":
+        # 모든 아레나를 스냅샷 상대로(999 > 아레나 수), 풀 = 그 스냅샷 하나, 이 학습의 스냅샷은 섞지 않는다.
+        return ["-SHSelfPlay=1", "-SHOpponentMix=1", "-SHMixSnapshot=999", "-SHMixBot=0",
+                f"-SHOpponentPool={absolute_posix(opponent['snapshot'])}", "-SHOpponentPoolOnly=1"]
+    if kind == "mix":
+        args = ["-SHSelfPlay=1", "-SHOpponentMix=1",
+                f"-SHMixSnapshot={int(opponent.get('snapshot_arenas', 6))}", f"-SHMixBot={int(opponent.get('bot_arenas', 2))}"]
+        if opponent.get("pool"):
+            args.append(f"-SHOpponentPool={absolute_posix(opponent['pool'])}")
+        return args
+    return ["-SHSelfPlay=1"]
+
+
+def describe_opponent(opponent: dict) -> str:
+    kind = opponent.get("kind", "self")
+    if kind == "bot":
+        return "스크립트 봇"
+    if kind == "model":
+        return f"고정 모델 — {opponent.get('snapshot')}"
+    if kind == "mix":
+        return (f"혼합 — 스냅샷 {opponent.get('snapshot_arenas', 6)} · 봇 {opponent.get('bot_arenas', 2)} 아레나, "
+                f"나머지 self-play / 스냅샷 풀: 이 학습의 스냅샷" + (f" + {opponent['pool']}" if opponent.get("pool") else ""))
+    return "self-play (같은 정책끼리)"
+
+
+def short_opponent(opponent: dict) -> str:
+    kind = opponent.get("kind", "self")
+    if kind == "model":
+        snapshot = Path(opponent.get("snapshot", ""))
+        return f"모델 {snapshot.parent.name}·{snapshot.name.replace('cum', '')}"
+    return {"bot": "봇", "mix": "혼합"}.get(kind, "self")
+
+
+def change_opponent(config: dict, new: dict) -> None:
+    """이어서 학습할 때 상대를 바꾼다. 언제 무엇에서 무엇으로 바꿨는지 run.json 에 남긴다."""
+    old = opponent_of(config)
+    if old == new:
+        return
+    latest = latest_snapshot(TRAINING_DIR / config["name"])
+    config.setdefault("opponent_history", []).append({
+        "at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "from_cumulative": hours_minutes(cumulative_seconds(latest)) if latest else "000h00m",
+        "from": old, "to": new})
+    config["opponent"] = new
+    save_config(config)
+
+
+def has_policy_files(snapshot_dir: Path) -> bool:
+    return all(any(snapshot_dir.glob(f"*{name}")) for name in ("policy.bin", "encoder.bin", "decoder.bin"))
+
+
+def policy_catalog() -> list[dict]:
+    """고를 수 있는 학습된 모델: Training/<이름>/cum… (이름순, 최신 먼저), Snapshots/<날짜>/cum… (최근 날짜 먼저)."""
+    entries: list[dict] = []
+    for root_name in ("Training", "Snapshots"):
+        root = ROOT / root_name
+        if not root.is_dir():
+            continue
+        groups = sorted((g for g in root.iterdir() if g.is_dir()), key=lambda g: g.name, reverse=(root_name == "Snapshots"))
+        for group in groups:
+            snapshots = [d for d in group.iterdir() if d.is_dir() and SNAPSHOT_DIR_RE.match(d.name) and has_policy_files(d)]
+            for snapshot in sorted(snapshots, key=cumulative_seconds, reverse=True):
+                entries.append({"dir": rel(snapshot), "group": group.name,
+                                "cum": hours_minutes(cumulative_seconds(snapshot)),
+                                "obs": read_meta(snapshot).get("obs_size", "?"), "saved": saved_at(snapshot)})
+    return entries
+
+
+def pick_model(prompt: str) -> str:
+    """학습된 모델 하나를 표에서 고른다. 스냅샷 폴더(저장소 기준 상대 경로)를 돌려준다."""
+    catalog = policy_catalog()
+    if not catalog:
+        print("    고를 수 있는 모델이 없다(Training/<이름>/cum… 또는 Snapshots/<날짜>/cum…).")
+        raise Cancel
+    print()
+    print_table(["번호", "학습 / 날짜", "누적", "관측", "저장 시각"],
+                [[str(i), e["group"], e["cum"], e["obs"], e["saved"]] for i, e in enumerate(catalog, start=1)])
+    chosen = catalog[ask_number(prompt, len(catalog)) - 1]
+    # ★ 관측 크기가 다르면 트레이너가 스냅샷을 불러와도 정책이 무작위로 남는다(엔진은 "Invalid Format" 만 찍는다).
+    common = max({e["obs"] for e in catalog}, key=lambda o: sum(1 for e in catalog if e["obs"] == o))
+    if chosen["obs"] not in ("?", common):
+        print(f"    ★ 이 모델의 관측 크기({chosen['obs']})가 대부분({common})과 다르다 — 지금 코드와 안 맞으면 상대가 무작위로 싸운다.")
+    return chosen["dir"]
 
 
 def check_name(name: str) -> str | None:
@@ -639,7 +790,7 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
         print(line(row))
 
 
-RUN_HEADERS = ["번호", "이름", "상태", "누적", "스냅샷", "마지막 저장", "push", "메모"]
+RUN_HEADERS = ["번호", "이름", "상태", "누적", "스냅샷", "마지막 저장", "push", "상대", "메모"]
 
 
 def run_rows(runs: list[Path]) -> list[list[str]]:
@@ -657,6 +808,7 @@ def run_rows(runs: list[Path]) -> list[list[str]]:
             str(len(snapshots)),
             saved_at(latest) if latest else "-",
             f"{pushed}/{len(snapshots)}" if snapshots else "-",
+            short_opponent(opponent_of(config)),
             (config.get("note") or "")[:30],
         ])
     return rows
@@ -677,7 +829,14 @@ def show_detail(run_dir: Path) -> None:
     print(f"    만든 때     : {config.get('created_at', '-')}")
     print(f"    시작 코드   : {config.get('git_commit', '-')[:10]}  (이 커밋의 보상 함수로 시작했다)")
     print(f"    시작 정책   : {config.get('initial_snapshot') or '처음부터'}")
-    print(f"    언리얼 옵션 : {' '.join(config.get('ue_args', []))}")
+    for restart in config.get("start_history", []):
+        source = "처음부터" if restart["from"] == "scratch" else restart["from"]
+        print(f"                  ↳ {restart['at'][:16]} 다시 시작: {source} (그때 최신 {restart['latest_before']})")
+    print(f"    학습 상대   : {describe_opponent(opponent_of(config))}")
+    for change in config.get("opponent_history", []):
+        print(f"                  ↳ {change['at'][:16]} (누적 {change['from_cumulative']}) "
+              f"{describe_opponent(change['from'])} → {describe_opponent(change['to'])}")
+    print(f"    언리얼 옵션 : {' '.join(a for a in config.get('ue_args', []) if not a.startswith(OPPONENT_PREFIXES))}")
     print(f"    스냅샷 주기 : {config.get('interval_minutes', 60):g}분")
     print(f"    메모        : {config.get('note') or '-'}")
     print(f"    로그        : {rel(run_dir / 'logs')}")
@@ -747,7 +906,156 @@ def ask_git_mode() -> str:
     return {"2": "commit", "3": "off"}.get(value, "push")
 
 
-def menu_new() -> tuple[str, dict, str, float | None]:
+def ask_opponent(current: dict | None = None) -> dict:
+    """학습 상대를 고른다. current 가 있으면 그게 기본값이다."""
+    kinds = ["self", "bot", "model", "mix"]
+    default = str(kinds.index(current.get("kind", "self")) + 1) if current else "1"
+    print("\n  학습 상대:" + (f"  (지금: {describe_opponent(current)})" if current else ""))
+    print("    1) self-play — 같은 정책끼리 (기본)")
+    print("    2) 스크립트 봇 — 고정 규칙 상대")
+    print("    3) 학습된 모델 하나 — 고른 스냅샷과만 싸운다(모든 아레나)")
+    print("    4) 혼합 — 아레나를 self-play / 과거 스냅샷 / 봇으로 나눈다")
+    while True:
+        choice = ask("선택", default)
+        try:
+            if choice == "1":
+                return {"kind": "self"}
+            if choice == "2":
+                return {"kind": "bot"}
+            if choice == "3":
+                return {"kind": "model", "snapshot": pick_model("상대 모델")}
+            if choice == "4":
+                return ask_mix(current if current and current.get("kind") == "mix" else None)
+            print("    1~4 중에서 고른다.")
+        except Cancel:
+            continue
+
+
+def ask_mix(current: dict | None) -> dict:
+    def ask_count(prompt: str, default: int) -> int:
+        while True:
+            value = ask(prompt, str(default))
+            if value.isdigit():
+                return int(value)
+            print("    0 이상의 정수로 적는다.")
+
+    print("    아레나 16개 중 일부를 과거 스냅샷 · 봇 상대로 돌리고, 나머지는 self-play 다.")
+    snapshot_arenas = ask_count("과거 스냅샷 상대 아레나 수", int((current or {}).get("snapshot_arenas", 6)))
+    bot_arenas = ask_count("스크립트 봇 상대 아레나 수", int((current or {}).get("bot_arenas", 2)))
+    print("\n    스냅샷 풀(10분마다 여기서 상대를 바꾼다. 지는 상대일수록 자주):")
+    print("      1) 이 학습이 저장한 스냅샷만 (기본)")
+    print("      2) + 다른 학습의 스냅샷 전부 (Training/<이름>)")
+    print("      3) + 폴더 직접 입력 (예: Snapshots/2026-10-25)")
+    pool = None
+    while True:
+        choice = ask("선택", "1")
+        if choice == "1":
+            break
+        if choice == "2":
+            runs = [r for r in run_dirs() if latest_snapshot(r)]
+            if not runs:
+                print("    스냅샷이 있는 학습이 없다.")
+                continue
+            show_runs(runs)
+            try:
+                pool = rel(runs[ask_number("어느 학습", len(runs)) - 1])
+            except Cancel:
+                continue
+            break
+        if choice == "3":
+            path = Path(ask("폴더"))
+            path = path if path.is_absolute() else ROOT / path
+            if path.is_dir():
+                pool = rel(path.resolve()) if path.resolve().is_relative_to(ROOT) else path.resolve().as_posix()
+                break
+            print("    없는 폴더다.")
+    return {"kind": "mix", "snapshot_arenas": snapshot_arenas, "bot_arenas": bot_arenas, "pool": pool}
+
+
+def ask_start_new() -> str | None:
+    """새 학습의 시작 정책. None = 처음부터."""
+    print("\n  시작 정책:")
+    print("    1) 처음부터 (무작위 초기화)")
+    print("    2) 학습된 모델에서 — 목록에서 고른다 (Training/<이름>/cum… · Snapshots/<날짜>/cum…)")
+    print("    3) 스냅샷 폴더 경로를 직접 입력")
+    while True:
+        choice = ask("선택", "1")
+        try:
+            if choice == "1":
+                return None
+            if choice == "2":
+                return pick_model("시작할 모델")
+            if choice == "3":
+                return resolve_initial(ask("스냅샷 폴더"))
+            print("    1~3 중에서 고른다.")
+        except ValueError as error:
+            print(f"    {error}")
+        except Cancel:
+            continue
+
+
+def ask_start_existing(run_dir: Path) -> str | None:
+    """기존 학습을 어디서부터 이을지. None = 최신 스냅샷(기본), "scratch" = 처음부터, 그 밖 = 스냅샷 폴더."""
+    snapshots = sorted(list_snapshots(run_dir), key=cumulative_seconds, reverse=True)
+    latest = snapshots[0] if snapshots else None
+    print("\n  시작 지점:")
+    print("    1) 이 학습의 최신 스냅샷부터 이어서" + (f" — {hours_minutes(cumulative_seconds(latest))} (기본)" if latest
+                                           else " — 스냅샷이 없어 처음 설정대로 시작 (기본)"))
+    print("    2) 이 학습의 다른 스냅샷부터 (되돌아가서 다시)")
+    print("    3) 다른 학습된 모델에서 (목록)")
+    print("    4) 처음부터 다시 (무작위 초기화)")
+    while True:
+        choice = ask("선택", "1")
+        try:
+            if choice == "1":
+                return None
+            if choice == "2":
+                if not snapshots:
+                    print("    이 학습에는 아직 스냅샷이 없다.")
+                    continue
+                print()
+                print_table(["번호", "누적", "저장 시각"],
+                            [[str(i), hours_minutes(cumulative_seconds(d)), saved_at(d)] for i, d in enumerate(snapshots, start=1)])
+                return rel(snapshots[ask_number("시작할 스냅샷", len(snapshots)) - 1])
+            if choice == "3":
+                return pick_model("시작할 모델")
+            if choice == "4":
+                print("    ★ 같은 폴더에 누적 000h 부터 다시 쌓인다. 이름이 겹치는 스냅샷은 뒤에 _2 가 붙는다.")
+                print("      예전 학습과 섞이지 않게 하려면 새 이름(메뉴 1)으로 시작하는 편이 깔끔하다.")
+                if ask_yes("그래도 이 학습 폴더에서 처음부터 할까", default=False):
+                    return "scratch"
+                continue
+            print("    1~4 중에서 고른다.")
+        except Cancel:
+            continue
+
+
+def describe_start(run_dir: Path, start_point: str | None, config: dict) -> str:
+    if start_point == "scratch":
+        return "처음부터 (무작위 초기화)"
+    if start_point:
+        return f"{start_point} (누적 {hours_minutes(cumulative_seconds(Path(absolute_posix(start_point))))}) 에서"
+    latest = latest_snapshot(run_dir)
+    if latest:
+        return f"이어서 — {rel(latest)} (누적 {hours_minutes(cumulative_seconds(latest))})"
+    if config.get("initial_snapshot"):
+        return f"{config['initial_snapshot']} 의 정책에서"
+    return "처음부터"
+
+
+def record_start(config: dict, start_point: str | None) -> None:
+    """최신이 아닌 곳에서 다시 시작했으면 run.json 에 남긴다(학습 계보가 갈라진 지점)."""
+    if start_point is None:
+        return
+    latest = latest_snapshot(TRAINING_DIR / config["name"])
+    config.setdefault("start_history", []).append({
+        "at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "latest_before": hours_minutes(cumulative_seconds(latest)) if latest else "000h00m",
+        "from": start_point})
+    save_config(config)
+
+
+def menu_new() -> tuple[str, dict, str, float | None, str | None]:
     print("\n[새 학습]  보상 함수 등을 바꿨으면 새 이름으로 학습한다. 기존 학습 폴더는 그대로 남는다.")
     print("  ★ C++ 을 바꿨다면 먼저 빌드했는지 확인할 것 — 이 실행기는 빌드하지 않는다.")
     while True:
@@ -762,29 +1070,8 @@ def menu_new() -> tuple[str, dict, str, float | None]:
         else:
             break
 
-    runs = [r for r in run_dirs() if latest_snapshot(r)]
-    print("\n  시작 정책:")
-    print("    1) 처음부터 (무작위 초기화)")
-    print("    2) 기존 학습의 최신 정책에서" + ("" if runs else "  — 스냅샷이 있는 학습이 아직 없다"))
-    print("    3) 스냅샷 폴더 경로를 직접 입력 (예: Snapshots/2026-10-25/cum016h00m)")
-    initial = None
-    while True:
-        choice = ask("선택", "1")
-        try:
-            if choice == "2" and runs:
-                show_runs(runs)
-                initial = resolve_initial(runs[ask_number("어느 학습에서", len(runs)) - 1].name)
-            elif choice == "3":
-                initial = resolve_initial(ask("스냅샷 폴더"))
-            elif choice != "1":
-                print("    1~3 중에서 고른다.")
-                continue
-            break
-        except ValueError as error:
-            print(f"    {error}")
-        except Cancel:
-            continue
-
+    initial = ask_start_new()
+    opponent = ask_opponent()
     note = ask("메모 — 무엇을 바꿨는지 (빈칸 가능)")
     print(f"\n  기본 언리얼 옵션: {' '.join(DEFAULT_UE_ARGS)}")
     while True:
@@ -800,17 +1087,18 @@ def menu_new() -> tuple[str, dict, str, float | None]:
     print("\n  ── 확인 ──")
     print(f"    이름        : {name}  →  {rel(TRAINING_DIR / name)}/")
     print(f"    시작 정책   : {initial or '처음부터'}")
+    print(f"    학습 상대   : {describe_opponent(opponent)}")
     print(f"    메모        : {note or '-'}")
     print(f"    언리얼 옵션 : {' '.join(DEFAULT_UE_ARGS + extra)}")
     print(f"    실행 시간   : {f'{hours:g}시간' if hours else 'Ctrl+C 로 멈출 때까지'}")
     print(f"    스냅샷      : {interval:g}분마다, {GIT_MODE_TEXT[git_mode]}")
     if not ask_yes("시작할까"):
         raise Cancel
-    config = create_config(name, initial, note, extra, interval)
-    return name, config, git_mode, hours
+    config = create_config(name, initial, note, extra, interval, opponent)
+    return name, config, git_mode, hours, None
 
 
-def menu_resume() -> tuple[str, dict, str, float | None]:
+def menu_resume() -> tuple[str, dict, str, float | None, str | None]:
     runs = run_dirs()
     print("\n[기존 학습 이어서]  고른 학습의 최신 스냅샷부터, 처음과 같은 설정으로 이어서 학습한다.")
     if not show_runs(runs):
@@ -819,14 +1107,25 @@ def menu_resume() -> tuple[str, dict, str, float | None]:
     if is_running(run_dir):
         print(f"    '{run_dir.name}' 은(는) 이미 다른 창에서 학습 중이다.")
         raise Cancel
-    latest = latest_snapshot(run_dir)
-    print(f"\n    '{run_dir.name}': " + (f"누적 {hours_minutes(cumulative_seconds(latest))} 부터 이어서" if latest
-                                         else "스냅샷이 없어 처음 설정대로 시작"))
+    config = load_config(run_dir.name)
+    current = opponent_of(config)
+    start_point = ask_start_existing(run_dir)
+    print(f"\n    학습 상대: {describe_opponent(current)}")
+    new_opponent = ask_opponent(current) if ask_yes("학습 상대를 바꿀까", default=False) else current
     hours = ask_hours()
     git_mode = ask_git_mode()
+    print("\n  ── 확인 ──")
+    print(f"    시작 지점   : {describe_start(run_dir, start_point, config)}")
+    print(f"    학습 상대   : {describe_opponent(new_opponent)}" +
+          (f"  (바꿈: {describe_opponent(current)} → )" if new_opponent != current else ""))
+    print(f"    실행 시간   : {f'{hours:g}시간' if hours else 'Ctrl+C 로 멈출 때까지'}")
+    print(f"    스냅샷      : {GIT_MODE_TEXT[git_mode]}")
     if not ask_yes("시작할까"):
         raise Cancel
-    return run_dir.name, load_config(run_dir.name), git_mode, hours
+    # 시작을 확정한 뒤에만 run.json 을 바꾼다.
+    change_opponent(config, new_opponent)
+    record_start(config, start_point)
+    return run_dir.name, config, git_mode, hours, start_point
 
 
 def menu_status() -> None:
@@ -866,7 +1165,7 @@ def menu_login() -> None:
         print("    지웠다.")
 
 
-def interactive() -> tuple[str, dict, str, float | None] | None:
+def interactive() -> tuple[str, dict, str, float | None, str | None] | None:
     while True:
         env = load_env()
         login = env.get("GITHUB_USER") if env.get("GITHUB_TOKEN") else None
@@ -897,7 +1196,8 @@ def interactive() -> tuple[str, dict, str, float | None] | None:
 
 # --- 시작 -------------------------------------------------------------------
 
-def start(name: str, config: dict, git_mode: str, hours: float | None, force_login: bool = False) -> None:
+def start(name: str, config: dict, git_mode: str, hours: float | None, start_point: str | None = None,
+          force_login: bool = False) -> None:
     global _log_file
     run_dir = TRAINING_DIR / name
 
@@ -911,23 +1211,19 @@ def start(name: str, config: dict, git_mode: str, hours: float | None, force_log
     _log_file = run_dir / "logs" / "train_py.log"
     _log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    resume = latest_snapshot(run_dir)
-    if resume:
-        origin = f"이어서 — {rel(resume)} (누적 {hours_minutes(cumulative_seconds(resume))})"
-    elif config.get("initial_snapshot"):
-        origin = f"{config['initial_snapshot']} 의 정책에서"
-    else:
-        origin = "처음부터"
+    origin = describe_start(run_dir, start_point, config)
     print("\n" + "-" * 56)
     print(f"  학습 '{name}' 시작")
     print(f"    시작 정책   : {origin}")
     print(f"    실행 시간   : {f'{hours:g}시간' if hours else '제한 없음 — 이 창에서 Ctrl+C 로 멈춘다'}")
     print(f"    스냅샷      : {config.get('interval_minutes', 60):g}분마다 → {rel(run_dir)}/cumXXXhYYm/")
+    print(f"    학습 상대   : {describe_opponent(opponent_of(config))}")
     print(f"    git         : {GIT_MODE_TEXT[git_mode]}")
-    print(f"    언리얼 옵션 : {' '.join(config['ue_args'])}")
+    print(f"    언리얼 옵션 : {' '.join(a for a in config['ue_args'] if not a.startswith(OPPONENT_PREFIXES))} "
+          f"{' '.join(opponent_args(opponent_of(config)))}")
     print("-" * 56)
     say(f"설정: {json.dumps(config, ensure_ascii=False)} / git={git_mode} / hours={hours}")
-    train(name, config, git_mode=git_mode, session_hours=hours)
+    train(name, config, git_mode=git_mode, session_hours=hours, start_point=start_point)
     say("끝.")
 
 
@@ -943,6 +1239,10 @@ def main() -> None:
     parser.add_argument("--no-git", action="store_true", help="커밋도 push 도 하지 않는다(시험용)")
     parser.add_argument("--list", action="store_true", help="학습 현황만 보여 준다")
     parser.add_argument("--login", action="store_true", help="GitHub 로그인(토큰)을 새로 입력한다")
+    parser.add_argument("--start", dest="start_point",
+                        help="이미 있는 학습을 어디서부터: latest(기본) | scratch(처음부터) | <학습 이름 또는 스냅샷 폴더>")
+    parser.add_argument("--opponent", help="학습 상대: self | bot | mix | <학습 이름 또는 스냅샷 폴더>(그 모델 하나). "
+                                           "이미 있는 학습에 주면 상대를 바꾼다(run.json 에 기록)")
     parser.add_argument("ue_args", nargs="*", help="새 학습에만: 언리얼 추가 옵션(예: -SHApproach=1). '--' 뒤에 적는다")
     args = parser.parse_args()
 
@@ -974,18 +1274,39 @@ def main() -> None:
     problem = check_name(args.name)
     if problem:
         raise SystemExit(problem)
+    opponent = None
+    if args.opponent:
+        if args.opponent in ("self", "bot"):
+            opponent = {"kind": args.opponent}
+        elif args.opponent == "mix":
+            opponent = {"kind": "mix", "snapshot_arenas": 6, "bot_arenas": 2, "pool": None}
+        else:
+            try:
+                opponent = {"kind": "model", "snapshot": resolve_initial(args.opponent)}
+            except ValueError as error:
+                raise SystemExit(str(error))
     config = load_config(args.name)
     if config is None:
         try:
             initial = resolve_initial(args.initial) if args.initial else None
-            config = create_config(args.name, initial, args.note, args.ue_args, args.interval_minutes)
+            config = create_config(args.name, initial, args.note, args.ue_args, args.interval_minutes, opponent)
         except ValueError as error:
             raise SystemExit(str(error))
+    elif opponent is not None:
+        change_opponent(config, opponent)
+
+    start_point = None
+    if args.start_point and args.start_point != "latest":
+        try:
+            start_point = "scratch" if args.start_point == "scratch" else resolve_initial(args.start_point)
+        except ValueError as error:
+            raise SystemExit(str(error))
+        record_start(config, start_point)
     elif args.initial or args.ue_args:
         print("  이미 있는 학습이라 --from / 추가 옵션은 무시하고 처음 설정(run.json)으로 이어서 학습한다. "
               "설정을 바꾸려면 새 이름을 쓴다.")
     git_mode = "off" if args.no_git else ("commit" if args.no_push else "push")
-    start(args.name, config, git_mode, args.hours, force_login=args.login)
+    start(args.name, config, git_mode, args.hours, start_point=start_point, force_login=args.login)
 
 
 if __name__ == "__main__":

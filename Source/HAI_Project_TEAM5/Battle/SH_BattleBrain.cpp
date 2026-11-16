@@ -20,11 +20,12 @@ ASH_BattleBrain::ASH_BattleBrain()
 	Manager = CreateDefaultSubobject<ULearningAgentsManager>(TEXT("Manager"));
 }
 
-bool ASH_BattleBrain::Assemble(const TArray<ASH_RLCharacter*>& Units, const FString& SnapshotDirectory)
+bool ASH_BattleBrain::Assemble(const TArray<ASH_RLCharacter*>& Units, const FString& SnapshotDirectory, FString& OutError)
 {
 	if (Units.Num() == 0 || !Units[0])
 	{
-		UE_LOG(LogTemp, Error, TEXT("[SH_BattleBrain] 조종할 유닛이 없다."));
+		OutError = TEXT("조종할 유닛이 없다.");
+		UE_LOG(LogTemp, Error, TEXT("[SH_BattleBrain] %s"), *OutError);
 		return false;
 	}
 
@@ -38,7 +39,8 @@ bool ASH_BattleBrain::Assemble(const TArray<ASH_RLCharacter*>& Units, const FStr
 	Interactor = Cast<USH_ShooterInteractor>(InteractorPtr);
 	if (!Interactor)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[SH_BattleBrain] MakeInteractor 실패."));
+		OutError = TEXT("MakeInteractor 실패.");
+		UE_LOG(LogTemp, Error, TEXT("[SH_BattleBrain] %s"), *OutError);
 		return false;
 	}
 
@@ -55,8 +57,14 @@ bool ASH_BattleBrain::Assemble(const TArray<ASH_RLCharacter*>& Units, const FStr
 		/*Encoder*/ nullptr, /*Policy*/ nullptr, /*Decoder*/ nullptr,
 		/*bReinitEncoder*/ true, /*bReinitPolicy*/ true, /*bReinitDecoder*/ true,
 		FLearningAgentsPolicySettings(), /*Seed*/ 1234);
-	if (!Policy || !LoadSnapshot(SnapshotDirectory))
+	if (!Policy)
 	{
+		OutError = TEXT("MakePolicy 실패.");
+		return false;
+	}
+	if (!LoadSnapshot(SnapshotDirectory, OutError))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[SH_BattleBrain] %s"), *OutError);
 		return false;
 	}
 
@@ -72,11 +80,11 @@ bool ASH_BattleBrain::Assemble(const TArray<ASH_RLCharacter*>& Units, const FStr
 	return true;
 }
 
-bool ASH_BattleBrain::LoadSnapshot(const FString& Directory)
+bool ASH_BattleBrain::LoadSnapshot(const FString& Directory, FString& OutError)
 {
 	if (Directory.IsEmpty())
 	{
-		UE_LOG(LogTemp, Error, TEXT("[SH_BattleBrain] 유닛 정의에 정책 스냅샷 폴더가 비어 있다."));
+		OutError = TEXT("정책 스냅샷 폴더가 비어 있다.");
 		return false;
 	}
 
@@ -92,7 +100,20 @@ bool ASH_BattleBrain::LoadSnapshot(const FString& Directory)
 		const FString Path = SHSnapshot::ResolveFile(FullDirectory, File);
 		if (!FPaths::FileExists(Path))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[SH_BattleBrain] 스냅샷 파일이 없다: %s"), *Path);
+			OutError = FString::Printf(TEXT("스냅샷 파일이 없다: %s"), *Path);
+			return false;
+		}
+	}
+
+	// ★ 관측 크기가 다른 스냅샷은 불러오면 엔진이 "Invalid Format" 만 찍고 정책이 **무작위로 남는다**(에러 없이 엉뚱하게 싸운다).
+	//   meta 의 obs_size 가 지금 코드의 관측 크기와 다르면 아예 시작하지 않는다. obs_size 가 없는 옛 스냅샷은 그대로 시도한다.
+	const TMap<FString, FString> Meta = SHSnapshot::ReadMeta(FullDirectory);
+	if (const FString* SnapshotObs = Meta.Find(TEXT("obs_size")))
+	{
+		const int32 Expected = Interactor->GetObservationVectorSize();
+		if (FCString::Atoi(**SnapshotObs) != Expected)
+		{
+			OutError = FString::Printf(TEXT("관측 크기가 다른 스냅샷이다(스냅샷 %s, 지금 코드 %d) — 다른 스냅샷을 고를 것."), **SnapshotObs, Expected);
 			return false;
 		}
 	}

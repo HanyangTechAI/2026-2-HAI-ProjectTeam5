@@ -13,4 +13,10 @@ namespace SHSnapshot
 	 *  그 파일이 없으면 옛 형식(Saved/SHSnapshots/.../policy.bin)으로 본다.
 	 */
 	HAI_PROJECT_TEAM5_API FString ResolveFile(const FString& Directory, const TCHAR* FileName);
+
+	/** 스냅샷의 meta.txt 를 key=value 맵으로 읽는다. 없으면 빈 맵(옛 스냅샷). */
+	HAI_PROJECT_TEAM5_API TMap<FString, FString> ReadMeta(const FString& Directory);
+
+	/** 정책 실행에 필요한 세 파일(policy · encoder · decoder)이 모두 있는가. */
+	HAI_PROJECT_TEAM5_API bool HasPolicyFiles(const FString& Directory);
 }

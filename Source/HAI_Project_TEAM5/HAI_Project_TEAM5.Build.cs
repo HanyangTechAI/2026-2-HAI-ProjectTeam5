@@ -15,10 +15,12 @@ public class HAI_Project_TEAM5 : ModuleRules
 			"InputCore",
 			"EnhancedInput",
 			"AIModule",
+			"GameplayTasks",   // 행동 트리 노드(UBTNode)가 IGameplayTaskOwnerInterface 를 구현한다 — 없으면 링크 에러
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
 			"Slate",
+			"SlateCore",   // ESelectInfo(콤보박스 OnSelectionChanged 의 매개변수) — 없으면 링크 에러
 
 			// --- Learning Agents (RL) ---
 			// LearningAgentsTraining 은 "Type": "Runtime" 이라 Shipping 에도 들어간다.
