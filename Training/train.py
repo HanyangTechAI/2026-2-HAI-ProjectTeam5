@@ -625,7 +625,7 @@ def create_config(name: str, initial: str | None, note: str, extra_args: list[st
 # 아레나 클래스를 -SHArena=<BP 이름> 으로 바꾼다(ASH_RLDirector::ApplyArenaOverride). 아레나 개수는 엔진의 -GymsCountOverride=N.
 # 팀 인원(10 대 10, 1 대 1 …)은 아레나 BP 의 UnitsPerTeam 이 정한다 — 관측 크기는 인원과 상관없어 모델을 서로 이어 쓸 수 있다.
 #
-# run.json 의 "map": {"arena": "BP_SHArena_Corridor", "arenas": 160}
+# run.json 의 "map": {"arena": "BP_SHArena_Corridor", "arenas": 16}
 #   arena  None = 레벨에 지정된 기본 아레나(BP_SHArena) — 옛 run.json 은 "map" 이 없고 이것과 같다.
 #   arenas None = 레벨의 기본 개수(16).
 
@@ -638,7 +638,7 @@ DEFAULT_ARENA_COUNT = 16
 KNOWN_MAPS = {
     "BP_SHArena":          {"label": "기본 원형 — 팔각형 반경 1,750 (누적 학습에 써 온 맵)", "team": "10 대 10", "arenas": 16},
     "BP_SHArena_Complex":  {"label": "복잡한 원형 — 팔각형 반경 2,450, 엄폐물 22개", "team": "10 대 10", "arenas": 16},
-    "BP_SHArena_Corridor": {"label": "ㄱ자 복도 — 다리 22 m x 2, 폭 11 m, 꺾이는 곳에서 만난다", "team": "1 대 1", "arenas": 160},
+    "BP_SHArena_Corridor": {"label": "ㄱ자 복도 — 다리 22 m x 2, 폭 11 m, 꺾이는 곳에서 만난다", "team": "10 대 10", "arenas": 16},
 }
 MAP_ALIASES = {"basic": "BP_SHArena", "default": "BP_SHArena", "complex": "BP_SHArena_Complex",
                "corridor": "BP_SHArena_Corridor"}
@@ -1123,7 +1123,7 @@ def ask_map(current: dict | None = None) -> dict:
 
     suggested = (arena_count(current) if current and arena_name(current) == name
                  else KNOWN_MAPS.get(name, {}).get("arenas", DEFAULT_ARENA_COUNT))
-    print("    아레나 수: 1 대 1 맵은 아레나당 유닛이 2명이라, 10 대 10 (16개 = 유닛 320) 과 비슷한 수집량을 내려면 많이 둔다.")
+    print("    아레나 수: 10 대 10 은 16개 = 유닛 320 이 지금까지의 학습량이다. 인원이 적은 맵은 아레나를 늘려야 비슷한 양을 모은다.")
     while True:
         value = ask("아레나 수", str(suggested))
         if value.isdigit() and 1 <= int(value) <= 400:
@@ -1420,7 +1420,7 @@ def main() -> None:
                                            "이미 있는 학습에 주면 상대를 바꾼다(run.json 에 기록)")
     parser.add_argument("--map", help="학습 맵: basic | complex | corridor | <Content/RL 의 아레나 BP 이름>. "
                                       "이미 있는 학습에 주면 맵을 바꾼다(run.json 에 기록)")
-    parser.add_argument("--arenas", type=int, help="아레나 수(기본: 맵마다 — 기본 · 복잡 16, 복도 160)")
+    parser.add_argument("--arenas", type=int, help="아레나 수(기본: 맵마다 — 기본 · 복잡 · 복도 16)")
     parser.add_argument("ue_args", nargs="*", help="새 학습에만: 언리얼 추가 옵션(예: -SHApproach=1). '--' 뒤에 적는다")
     args = parser.parse_args()
 

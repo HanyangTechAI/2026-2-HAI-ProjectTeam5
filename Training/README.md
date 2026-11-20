@@ -56,13 +56,13 @@ Training/
 |---|---|---|---|
 | `BP_SHArena` (기본) | 팔각형 반경 1,750 (누적 학습에 써 온 맵) | 10 대 10 | 16 (유닛 320) |
 | `BP_SHArena_Complex` | 팔각형 반경 2,450, 엄폐물 22개 | 10 대 10 | 16 |
-| `BP_SHArena_Corridor` | ㄱ자 복도 — 다리 2,200 x 2, 폭 1,100, 양 끝에서 시작해 꺾이는 곳에서 만난다 | 1 대 1 | 160 (유닛 320) |
+| `BP_SHArena_Corridor` | ㄱ자 복도 — 다리 2,200 x 2, 폭 1,100, 양 끝에서 시작해 꺾이는 곳에서 만난다 | 10 대 10 | 16 |
 
-- 인원은 아레나 BP 의 `UnitsPerTeam` 이 정한다. 1 대 1 은 아레나당 유닛이 2명이라 아레나를 많이 둬야 10 대 10 과 비슷한 양을 모은다.
-- **관측 크기는 맵 · 인원과 상관없다**(보이는 적 · 아군이 최대 10 · 9 의 집합). 10 대 10 에서 학습한 모델을 복도 1 대 1 에서 이어서 학습할 수 있고, 반대도 된다.
+- 인원은 아레나 BP 의 `UnitsPerTeam` 이 정한다. 인원이 적은 아레나(예: 1 대 1)를 만들면 아레나를 많이 둬야 10 대 10 x 16 과 비슷한 양을 모은다.
+- **관측 크기는 맵 · 인원과 상관없다**(보이는 적 · 아군이 최대 10 · 9 의 집합). 원형 맵에서 학습한 모델을 복도 맵에서 이어서 학습할 수 있고, 반대도 된다.
 - 이어서 학습할 때 맵을 바꾸면 `run.json` 의 `map_history` 에 시각 · 그때의 누적 · 이전/이후 맵이 남는다.
 - 혼합 상대의 아레나 수(스냅샷 N · 봇 M)는 맵의 아레나 수 안에서 고른다. 맵을 바꿔 합이 넘치면 16 중 6 · 2 비율로 줄인다.
-- 명령줄: `train.bat C --map corridor`, `--map complex`, `--map basic`, `--map BP_SHArena_X`, 아레나 수 `--arenas 100`.
+- 명령줄: `train.bat C --map corridor`, `--map complex`, `--map basic`, `--map BP_SHArena_X`, 아레나 수 `--arenas 24`.
   이미 있는 학습에 주면 맵을 바꾼다.
 - 추가 옵션 칸에 `-SHArena=` · `-GymsCountOverride` 를 직접 적으면 막는다(맵은 `run.json` 의 `"map"` 으로만 정한다).
 - ★ `-SHArena` 는 트레이너 빌드가 필요하다(2026-11-20 추가). 그 전 빌드로 돌리면 옵션이 무시되고 기본 맵으로 학습한다.
@@ -113,7 +113,7 @@ push 하는 학습을 시작하면 **학습 전에** 로그인을 확인한다(�
 | 이번에는 8시간만 | `train.bat A --hours 8` |
 | A 를 예전 스냅샷에서 다시 | `train.bat A --start Training/A/cum005h00m` |
 | A 를 처음부터 다시(같은 폴더) | `train.bat A --start scratch` |
-| 복도 1 대 1 맵으로 새 학습 | `train.bat D --map corridor` (아레나 수 `--arenas 100`) |
+| ㄱ자 복도 맵으로 새 학습 | `train.bat D --map corridor` (아레나 수 `--arenas 24`) |
 | A 를 이제부터 복도 맵에서 | `train.bat A --map corridor` |
 | 커밋만, push 는 안 함 | `train.bat A --no-push` |
 | 현황 표만 보기 | `train.bat --list` |
