@@ -900,6 +900,14 @@ void ASH_CombatTrainer::Assemble()
 			TEXT("- 조준 보조 %d (강도 %.3f), 정렬 보상 %d (배율 %.3f), 시야 보상 %d (배율 %.3f)\n- 실험 기록: `%s`\n- 스냅샷:\n"),
 			bAimAssist ? 1 : 0, AimAssistStrength, bAimReward ? 1 : 0, AimRewardScale,
 			bSeeReward ? 1 : 0, SeeRewardScale, *ExperimentDirectory));
+
+		// 맵(아레나 클래스)과 인원. -SHArena 로 바꿀 수 있으므로 실행마다 남긴다.
+		if (const ASH_Arena* First = Arenas.Num() > 0 ? Arenas[0].Get() : nullptr)
+		{
+			RunLogHeader.ReplaceInline(TEXT("- 보상:"), *FString::Printf(
+				TEXT("- 맵: `%s` x %d, %d 대 %d\n- 보상:"),
+				*First->GetClass()->GetName(), Arenas.Num(), First->GetTeamSize(0), First->GetTeamSize(1)));
+		}
 		AppendDailyLog(FString());
 	}
 

@@ -74,9 +74,123 @@ void ASH_Arena::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 
+	SyncDerivedRadius();
 	RebuildArenaGeometry();
 	// ★ 반드시 분리해서 부른다. 경계 생성을 꺼도 유닛 풀은 채워져야 한다.
 	RebuildEntityPool();
+}
+
+void ASH_Arena::SyncDerivedRadius()
+{
+	if (BoundaryShape == ESHArenaShape::Rectangle)
+	{
+		ArenaRadius = static_cast<float>(RectHalfExtents.Size());
+	}
+	else if (BoundaryShape == ESHArenaShape::LShape)
+	{
+		// 중심(꺾이는 곳)에서 가장 먼 점 = 다리 끝의 바깥 모서리.
+		ArenaRadius = FMath::Sqrt(LegLength * LegLength + LegHalfWidth * LegHalfWidth);
+	}
+}
+
+namespace SHArena
+{
+	/** LShape 의 두 다리를 (중심, 반폭) 직사각형 두 개로. 0 = −X 다리(꺾이는 곳 포함), 1 = −Y 다리(꺾이는 곳 포함). */
+	static void LegRects(float LegLength, float HalfWidth, float Margin, FVector2D OutCenter[2], FVector2D OutHalf[2])
+	{
+		const double Along = 0.5 * (static_cast<double>(LegLength) + HalfWidth) - Margin;   // 다리 끝 ~ 바깥 모서리
+		const double Mid = 0.5 * (static_cast<double>(HalfWidth) - LegLength);
+		const double Across = static_cast<double>(HalfWidth) - Margin;
+		OutCenter[0] = FVector2D(Mid, 0.0);  OutHalf[0] = FVector2D(FMath::Max(0.0, Along), FMath::Max(0.0, Across));
+		OutCenter[1] = FVector2D(0.0, Mid);  OutHalf[1] = FVector2D(FMath::Max(0.0, Across), FMath::Max(0.0, Along));
+	}
+
+	static bool InsideRect(const FVector2D& P, const FVector2D& Center, const FVector2D& Half)
+	{
+		return FMath::Abs(P.X - Center.X) <= Half.X && FMath::Abs(P.Y - Center.Y) <= Half.Y;
+	}
+
+	static FVector2D ClampRect(const FVector2D& P, const FVector2D& Center, const FVector2D& Half)
+	{
+		return FVector2D(FMath::Clamp(P.X, Center.X - Half.X, Center.X + Half.X),
+		                 FMath::Clamp(P.Y, Center.Y - Half.Y, Center.Y + Half.Y));
+	}
+}
+
+FVector2D ASH_Arena::GetSideDirection(const int32 SpawnSide) const
+{
+	if (SpawnSide == 0)
+	{
+		return FVector2D(-1.0, 0.0);
+	}
+	return BoundaryShape == ESHArenaShape::LShape ? FVector2D(0.0, -1.0) : FVector2D(1.0, 0.0);
+}
+
+FVector ASH_Arena::GetEnemySidePoint(const int32 Team, const float Fraction) const
+{
+	const FVector2D Direction = GetSideDirection(GetSpawnSide(1 - Team));
+	const double Reach = (BoundaryShape == ESHArenaShape::LShape ? LegLength : ArenaRadius) * Fraction;
+	const FVector Center = GetActorLocation();
+	return FVector(Center.X + Direction.X * Reach, Center.Y + Direction.Y * Reach, Center.Z);
+}
+
+FVector ASH_Arena::GetAdvanceGoal(const FVector& From, const int32 Team) const
+{
+	const FVector Center = GetActorLocation();
+	if (BoundaryShape != ESHArenaShape::LShape)
+	{
+		return FVector(2.0 * Center.X - From.X, 2.0 * Center.Y - From.Y, From.Z);   // 반대편 (예전 그대로)
+	}
+
+	// 지금 자기 진영 다리(꺾이는 곳 바깥)에 있으면 꺾이는 곳으로, 아니면 적 진영 다리 끝으로.
+	const FVector2D Local(From.X - Center.X, From.Y - Center.Y);
+	const FVector2D OwnDirection = GetSideDirection(GetSpawnSide(Team));
+	const double AlongOwnLeg = FVector2D::DotProduct(Local, OwnDirection);   // 꺾이는 곳 중심에서 자기 다리 쪽으로 얼마나 나가 있나
+	if (AlongOwnLeg > LegHalfWidth)
+	{
+		return FVector(Center.X, Center.Y, From.Z);
+	}
+	const FVector Enemy = GetEnemySidePoint(Team, (SpawnRadius > 0.0f ? SpawnRadius / FMath::Max(LegLength, 1.0f) : 0.8f));
+	return FVector(Enemy.X, Enemy.Y, From.Z);
+}
+
+bool ASH_Arena::IsInsidePlayArea(const FVector2D& Local, const float Margin) const
+{
+	if (BoundaryShape == ESHArenaShape::LShape)
+	{
+		FVector2D Centers[2], Halves[2];
+		SHArena::LegRects(LegLength, LegHalfWidth, Margin, Centers, Halves);
+		return SHArena::InsideRect(Local, Centers[0], Halves[0]) || SHArena::InsideRect(Local, Centers[1], Halves[1]);
+	}
+	if (BoundaryShape == ESHArenaShape::Rectangle)
+	{
+		return FMath::Abs(Local.X) <= RectHalfExtents.X - Margin
+			&& FMath::Abs(Local.Y) <= RectHalfExtents.Y - Margin;
+	}
+	return Local.Size() <= ArenaRadius - Margin;
+}
+
+FVector2D ASH_Arena::ClampToPlayArea(const FVector2D& Local, const float Margin) const
+{
+	if (BoundaryShape == ESHArenaShape::LShape)
+	{
+		// 두 다리 직사각형 각각으로 당겨 보고 더 가까운 쪽. 이미 안이면 둘 중 하나가 자기 자신이다.
+		FVector2D Centers[2], Halves[2];
+		SHArena::LegRects(LegLength, LegHalfWidth, Margin, Centers, Halves);
+		const FVector2D A = SHArena::ClampRect(Local, Centers[0], Halves[0]);
+		const FVector2D B = SHArena::ClampRect(Local, Centers[1], Halves[1]);
+		return FVector2D::DistSquared(A, Local) <= FVector2D::DistSquared(B, Local) ? A : B;
+	}
+	if (BoundaryShape == ESHArenaShape::Rectangle)
+	{
+		const double LimitX = FMath::Max(0.0, RectHalfExtents.X - Margin);
+		const double LimitY = FMath::Max(0.0, RectHalfExtents.Y - Margin);
+		return FVector2D(FMath::Clamp(Local.X, -LimitX, LimitX), FMath::Clamp(Local.Y, -LimitY, LimitY));
+	}
+
+	const double Limit = FMath::Max(0.0, static_cast<double>(ArenaRadius) - Margin);
+	const double Dist = Local.Size();
+	return (Dist > Limit && Dist > KINDA_SMALL_NUMBER) ? Local * (Limit / Dist) : Local;
 }
 
 void ASH_Arena::RebuildArenaGeometry()
@@ -93,6 +207,126 @@ void ASH_Arena::RebuildArenaGeometry()
 				Wall->SetVisibility(false);
 				Wall->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 			}
+		}
+		return;
+	}
+
+	// --- ㄱ자 경계 ------------------------------------------------------------
+	// 꺾이는 곳 중심이 원점, 다리가 −X 와 −Y 로. L = LegLength, h = LegHalfWidth, T = 벽 두께.
+	// 벽 6개(0~5)로 테두리를 두르고, 벽 6 은 −Y 다리의 바닥판으로 쓰고(바닥 메시가 하나라서), 벽 7 은 숨긴다.
+	if (BoundaryShape == ESHArenaShape::LShape)
+	{
+		const double L = LegLength;
+		const double h = LegHalfWidth;
+		const double T = WallThickness;
+		const double Z = 0.5 * WallHeight;
+
+		// 바닥: −X 다리 + 꺾이는 곳 (x ∈ [−L, h], y ∈ [−h, h]).
+		if (SimpleGymFloor)
+		{
+			SimpleGymFloor->SetRelativeLocation(FVector(0.5 * (h - L), 0.0, 0.0));
+			SimpleGymFloor->SetRelativeScale3D(FVector(
+				0.5 * (L + h) / SHArena::BasicShapeHalfExtent, h / SHArena::BasicShapeHalfExtent, 1.0));
+		}
+
+		struct FPiece { FVector Location; float Yaw; double Length; };
+		const FPiece Pieces[6] = {
+			{ FVector(h + 0.5 * T, 0.5 * (h - L), Z), 90.0f, L + h + 2.0 * T },          // 바깥 +X 면 (y ∈ [−L, h])
+			{ FVector(0.5 * (h - L), h + 0.5 * T, Z),  0.0f, L + h + 2.0 * T },          // 바깥 +Y 면 (x ∈ [−L, h])
+			{ FVector(-L - 0.5 * T, 0.0, Z),          90.0f, 2.0 * h + 2.0 * T },        // −X 다리 끝
+			{ FVector(0.0, -L - 0.5 * T, Z),           0.0f, 2.0 * h + 2.0 * T },        // −Y 다리 끝
+			{ FVector(0.5 * (-L - T - h), -h - 0.5 * T, Z), 0.0f, L + T - h },           // −X 다리 안쪽 면 (y = −h)
+			{ FVector(-h - 0.5 * T, 0.5 * (-L - T - h), Z), 90.0f, L + T - h },          // −Y 다리 안쪽 면 (x = −h)
+		};
+
+		for (int32 Index = 0; Index < Walls.Num(); ++Index)
+		{
+			UStaticMeshComponent* Wall = Walls[Index];
+			if (!Wall)
+			{
+				continue;
+			}
+			if (Index < 6)
+			{
+				const FPiece& Piece = Pieces[Index];
+				Wall->SetRelativeLocation(Piece.Location);
+				Wall->SetRelativeRotation(FRotator(0.0f, Piece.Yaw, 0.0f));
+				Wall->SetRelativeScale3D(FVector(
+					Piece.Length / (2.0 * SHArena::BasicShapeHalfExtent),
+					WallThickness / (2.0f * SHArena::BasicShapeHalfExtent),
+					WallHeight / (2.0f * SHArena::BasicShapeHalfExtent)));
+				Wall->SetVisibility(true);
+				Wall->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			}
+			else if (Index == 6)
+			{
+				// −Y 다리 바닥판 (x ∈ [−h, h], y ∈ [−L, −h]). 윗면이 z = 0 — 바닥 평면과 높이가 같다.
+				// ★ 이름이 Wall_06 이라 행동 트리의 엄폐물 수집(GatherCoverCorners, Wall_* 제외)에 잡히지 않는다.
+				const double Thickness = 2.0;
+				Wall->SetRelativeLocation(FVector(0.0, 0.5 * (-L - h), -0.5 * Thickness));
+				Wall->SetRelativeRotation(FRotator::ZeroRotator);
+				Wall->SetRelativeScale3D(FVector(
+					2.0 * h / (2.0 * SHArena::BasicShapeHalfExtent),
+					(L - h) / (2.0 * SHArena::BasicShapeHalfExtent),
+					Thickness / (2.0 * SHArena::BasicShapeHalfExtent)));
+				Wall->SetVisibility(true);
+				Wall->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			}
+			else
+			{
+				Wall->SetVisibility(false);
+				Wall->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			}
+		}
+		return;
+	}
+
+	// --- 직사각형 경계 (복도형) ------------------------------------------------
+	// 벽 0~3 으로 네 변을 만들고 4~7 은 숨긴다. 각 벽은 양 끝을 두께만큼 늘려 모서리를 막는다.
+	if (BoundaryShape == ESHArenaShape::Rectangle)
+	{
+		const double HalfX = RectHalfExtents.X;
+		const double HalfY = RectHalfExtents.Y;
+
+		if (SimpleGymFloor)
+		{
+			SimpleGymFloor->SetRelativeLocation(FVector::ZeroVector);
+			SimpleGymFloor->SetRelativeScale3D(FVector(
+				HalfX / SHArena::BasicShapeHalfExtent, HalfY / SHArena::BasicShapeHalfExtent, 1.0));
+		}
+
+		struct FSide { FVector Location; float Yaw; double Length; };
+		const double Offset = 0.5 * WallThickness;
+		const FSide Sides[4] = {
+			{ FVector( HalfX + Offset, 0.0, 0.5 * WallHeight), 90.0f, 2.0 * (HalfY + WallThickness) },   // +X 끝
+			{ FVector(0.0,  HalfY + Offset, 0.5 * WallHeight),  0.0f, 2.0 * (HalfX + WallThickness) },   // +Y 옆
+			{ FVector(-HalfX - Offset, 0.0, 0.5 * WallHeight), 90.0f, 2.0 * (HalfY + WallThickness) },   // -X 끝
+			{ FVector(0.0, -HalfY - Offset, 0.5 * WallHeight),  0.0f, 2.0 * (HalfX + WallThickness) },   // -Y 옆
+		};
+
+		for (int32 Index = 0; Index < Walls.Num(); ++Index)
+		{
+			UStaticMeshComponent* Wall = Walls[Index];
+			if (!Wall)
+			{
+				continue;
+			}
+			if (Index >= 4)
+			{
+				Wall->SetVisibility(false);
+				Wall->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+				continue;
+			}
+
+			const FSide& Side = Sides[Index];
+			Wall->SetRelativeLocation(Side.Location);
+			Wall->SetRelativeRotation(FRotator(0.0f, Side.Yaw, 0.0f));
+			Wall->SetRelativeScale3D(FVector(
+				Side.Length / (2.0 * SHArena::BasicShapeHalfExtent),
+				WallThickness / (2.0f * SHArena::BasicShapeHalfExtent),
+				WallHeight / (2.0f * SHArena::BasicShapeHalfExtent)));
+			Wall->SetVisibility(true);
+			Wall->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		}
 		return;
 	}
@@ -197,6 +431,9 @@ void ASH_Arena::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// OnConstruction 이 이미 맞췄지만, 생성 스크립트를 거치지 않은 경로(레벨에 저장된 옛 값)도 막는다.
+	SyncDerivedRadius();
+
 	int32 OverrideSwapSpawnSides = -1;
 	if (FParse::Value(FCommandLine::Get(), TEXT("SHSwapSpawnSides="), OverrideSwapSpawnSides)
 		&& (OverrideSwapSpawnSides == 0 || OverrideSwapSpawnSides == 1))
@@ -216,12 +453,15 @@ void ASH_Arena::BeginPlay()
 			*GetName());
 	}
 
-	if (SpawnRadius + SpawnRadiusJitter > ArenaRadius - ClampMargin)
+	// 진영 축 위의 가장 먼 스폰 점이 영역 안인가. Octagon 이면 예전 검사(SpawnRadius + Jitter <= ArenaRadius - ClampMargin)와 같다.
+	// 두 진영을 다 본다 — LShape 는 진영 1 이 −Y 다리다.
+	if (!IsInsidePlayArea(GetSideDirection(0) * (SpawnRadius + SpawnRadiusJitter), ClampMargin)
+		|| !IsInsidePlayArea(GetSideDirection(1) * (SpawnRadius + SpawnRadiusJitter), ClampMargin))
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("[SH_Arena] %s: SpawnRadius(%.0f) + Jitter(%.0f) 가 클램프 반경(%.0f) 밖이다. ")
+			TEXT("[SH_Arena] %s: SpawnRadius(%.0f) + Jitter(%.0f) 가 클램프 영역 밖이다. ")
 			TEXT("스폰 즉시 안으로 당겨진다."),
-			*GetName(), SpawnRadius, SpawnRadiusJitter, ArenaRadius - ClampMargin);
+			*GetName(), SpawnRadius, SpawnRadiusJitter);
 	}
 
 	// Gym 의 생명주기 훅. GymsManager::Start() 가 스폰 직후 Initialize() 를 부르고,
@@ -651,17 +891,7 @@ void ASH_Arena::ApplySpawnSlots()
 FVector ASH_Arena::ProjectPointToGym(const FVector& InLocation) const
 {
 	const FVector Center = GetActorLocation();
-	const float Limit = FMath::Max(0.0f, ArenaRadius - ClampMargin);
-
-	FVector Offset = InLocation - Center;
-	Offset.Z = 0.0f;
-
-	const float Dist = Offset.Size();
-	if (Dist > Limit && Dist > KINDA_SMALL_NUMBER)
-	{
-		Offset *= (Limit / Dist);
-	}
-
+	const FVector2D Offset = ClampToPlayArea(FVector2D(InLocation.X - Center.X, InLocation.Y - Center.Y), ClampMargin);
 	return FVector(Center.X + Offset.X, Center.Y + Offset.Y, Center.Z);
 }
 
@@ -676,6 +906,28 @@ FVector ASH_Arena::GenerateRandomLocationInGym() const
 			TEXT("[SH_Arena] %s: RandomStream 이 없다. GymsManager->Start() 가 호출됐는지 확인할 것."),
 			*GetName());
 		return Center;
+	}
+
+	if (BoundaryShape == ESHArenaShape::LShape)
+	{
+		// 다리 둘 중 하나를 고르고 그 안에서 균등. 꺾이는 곳은 두 다리에 다 들어 있어 조금 더 자주 뽑힌다(안전망이라 상관없다).
+		FVector2D Centers[2], Halves[2];
+		SHArena::LegRects(LegLength, LegHalfWidth, ClampMargin, Centers, Halves);
+		const int32 Leg = RandomStream->FRand() < 0.5f ? 0 : 1;
+		return FVector(
+			Center.X + Centers[Leg].X + RandomStream->FRandRange(-Halves[Leg].X, Halves[Leg].X),
+			Center.Y + Centers[Leg].Y + RandomStream->FRandRange(-Halves[Leg].Y, Halves[Leg].Y),
+			Center.Z);
+	}
+
+	if (BoundaryShape == ESHArenaShape::Rectangle)
+	{
+		const float LimitX = FMath::Max(0.0f, static_cast<float>(RectHalfExtents.X) - ClampMargin);
+		const float LimitY = FMath::Max(0.0f, static_cast<float>(RectHalfExtents.Y) - ClampMargin);
+		return FVector(
+			Center.X + RandomStream->FRandRange(-LimitX, LimitX),
+			Center.Y + RandomStream->FRandRange(-LimitY, LimitY),
+			Center.Z);
 	}
 
 	const float Limit = FMath::Max(0.0f, ArenaRadius - ClampMargin);
@@ -698,8 +950,9 @@ FTransform ASH_Arena::GetSpawnTransformForSlot(int32 Team, int32 SlotIndex, int3
 
 	// 팀 0 은 -X 쪽, 팀 1 은 +X 쪽. 호의 중심을 기준으로 좌우 대칭 배치.
 	// 진영 교대(bAlternateSides)로 뒤집힌 라운드거나 진단용 교환(-SHSwapSpawnSides=1)이 켜져 있으면 반대다.
-	const int32 SpawnSideTeam = AreSidesSwapped() ? 1 - Team : Team;
-	const float BaseAngleDeg = (SpawnSideTeam == 0) ? 180.0f : 0.0f;
+	// 진영 방향(GetSideDirection): 진영 0 = 180°(−X), 진영 1 = 0°(+X), LShape 의 진영 1 = 270°(−Y 다리).
+	const FVector2D SideDirection = GetSideDirection(GetSpawnSide(Team));
+	const float BaseAngleDeg = FMath::RadiansToDegrees(FMath::Atan2(SideDirection.Y, SideDirection.X));
 	const float Offset = (static_cast<float>(Slot) - 0.5f * static_cast<float>(Count - 1)) * ArcStepDegrees;
 
 	float AngleDeg = BaseAngleDeg + Offset;
@@ -720,10 +973,12 @@ FTransform ASH_Arena::GetSpawnTransformForSlot(int32 Team, int32 SlotIndex, int3
 	Radius = FMath::Clamp(Radius, 0.0f, FMath::Max(0.0f, ArenaRadius - ClampMargin));
 
 	const float AngleRad = FMath::DegreesToRadians(AngleDeg);
-	const FVector Location(
-		Center.X + Radius * FMath::Cos(AngleRad),
-		Center.Y + Radius * FMath::Sin(AngleRad),
-		Center.Z + SpawnZOffset);
+
+	// Rectangle · LShape 이면 호가 폭을 넘을 수 있어서(복도 폭 < 호 길이) 복도 안으로 당긴다.
+	// Octagon 이면 위에서 이미 반경을 잘랐으므로 그대로다.
+	const FVector2D Local = ClampToPlayArea(
+		FVector2D(Radius * FMath::Cos(AngleRad), Radius * FMath::Sin(AngleRad)), ClampMargin);
+	const FVector Location(Center.X + Local.X, Center.Y + Local.Y, Center.Z + SpawnZOffset);
 
 	// 원 위의 점에서 중심을 향하는 방향은 yaw = 각도 + 180.
 	const FRotator Rotation(0.0f, AngleDeg + 180.0f, 0.0f);
@@ -760,13 +1015,39 @@ void ASH_Arena::DrawDebugArena(float Duration) const
 	const FVector AxisY = FVector::RightVector;
 	const FVector AxisX = FVector::ForwardVector;
 
-	// 벽 안쪽 면.
-	DrawDebugCircle(World, Center + FVector(0, 0, 10.0f), ArenaRadius, 64,
-		FColor(120, 130, 140), false, Duration, 0, 4.0f, AxisY, AxisX, false);
+	if (BoundaryShape == ESHArenaShape::LShape)
+	{
+		for (const float Margin : { 0.0f, ClampMargin })
+		{
+			FVector2D Centers[2], Halves[2];
+			SHArena::LegRects(LegLength, LegHalfWidth, Margin, Centers, Halves);
+			for (int32 Leg = 0; Leg < 2; ++Leg)
+			{
+				DrawDebugBox(World, Center + FVector(Centers[Leg].X, Centers[Leg].Y, Margin > 0.0f ? 12.0f : 10.0f),
+					FVector(Halves[Leg].X, Halves[Leg].Y, 1.0),
+					Margin > 0.0f ? FColor(200, 90, 40) : FColor(120, 130, 140), false, Duration, 0, Margin > 0.0f ? 2.0f : 4.0f);
+			}
+		}
+	}
+	else if (BoundaryShape == ESHArenaShape::Rectangle)
+	{
+		// 벽 안쪽 면과 실제 클램프 영역.
+		DrawDebugBox(World, Center + FVector(0, 0, 10.0f), FVector(RectHalfExtents.X, RectHalfExtents.Y, 1.0),
+			FColor(120, 130, 140), false, Duration, 0, 4.0f);
+		DrawDebugBox(World, Center + FVector(0, 0, 12.0f),
+			FVector(RectHalfExtents.X - ClampMargin, RectHalfExtents.Y - ClampMargin, 1.0),
+			FColor(200, 90, 40), false, Duration, 0, 2.0f);
+	}
+	else
+	{
+		// 벽 안쪽 면.
+		DrawDebugCircle(World, Center + FVector(0, 0, 10.0f), ArenaRadius, 64,
+			FColor(120, 130, 140), false, Duration, 0, 4.0f, AxisY, AxisX, false);
 
-	// 실제 클램프 반경.
-	DrawDebugCircle(World, Center + FVector(0, 0, 12.0f), ArenaRadius - ClampMargin, 64,
-		FColor(200, 90, 40), false, Duration, 0, 2.0f, AxisY, AxisX, false);
+		// 실제 클램프 반경.
+		DrawDebugCircle(World, Center + FVector(0, 0, 12.0f), ArenaRadius - ClampMargin, 64,
+			FColor(200, 90, 40), false, Duration, 0, 2.0f, AxisY, AxisX, false);
+	}
 
 	// 스폰 원.
 	DrawDebugCircle(World, Center + FVector(0, 0, 14.0f), SpawnRadius, 64,

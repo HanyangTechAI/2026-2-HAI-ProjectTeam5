@@ -8,6 +8,10 @@
 #include "Engine/World.h"
 #include "Gun.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Misc/CommandLine.h"
+#include "Misc/PackageName.h"
+#include "Misc/Parse.h"
+#include "UObject/UnrealType.h"
 #include "LearningAgentsGym.h"
 #include "LearningAgentsGymsManager.h"
 #include "SH_Arena.h"
@@ -72,6 +76,19 @@ void ASH_RLDirector::BeginPlay()
 		return;
 	}
 
+	FString ArenaOverride;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHArena="), ArenaOverride) && !ArenaOverride.IsEmpty())
+	{
+		if (!ApplyArenaOverride(ArenaOverride))
+		{
+			// 다른 맵으로 몇 시간 학습하는 것보다 바로 멈추는 편이 낫다. ★ 정상 종료 경로라 엔진이 종료 코드를 0 으로 덮어쓴다 —
+			// 실행기(train.py)는 아래 로그 문구("를 적용하지 못해 종료한다")로 알아챈다. 문구를 바꾸면 train.py 의 ARENA_FAILURE_TEXT 도 바꿀 것.
+			UE_LOG(LogTemp, Error, TEXT("[SH_RLDirector] -SHArena=%s 를 적용하지 못해 종료한다."), *ArenaOverride);
+			FPlatformMisc::RequestExitWithStatus(/*bForce=*/false, /*ReturnCode=*/3);
+			return;
+		}
+	}
+
 	UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] GymsManager->Start() 호출 — 예상 아레나 %d개"), ExpectedCount);
 	GymsManager->Start();
 
@@ -88,6 +105,77 @@ void ASH_RLDirector::BeginPlay()
 	LastReportRealTime = FPlatformTime::Seconds();
 	LastReportSimTime = World->GetTimeSeconds();
 	FramesSinceReport = 0;
+}
+
+bool ASH_RLDirector::ApplyArenaOverride(const FString& Requested)
+{
+	// 이름만 오면 /Game/RL/ 아래로, 클래스 접미사(.X_C)가 없으면 붙인다.
+	FString Path = Requested.TrimStartAndEnd().TrimQuotes();
+	if (!Path.StartsWith(TEXT("/")))
+	{
+		Path = FString(TEXT("/Game/RL/")) + Path;
+	}
+	if (!Path.Contains(TEXT(".")))
+	{
+		Path += FString(TEXT(".")) + FPackageName::GetShortName(Path) + TEXT("_C");
+	}
+
+	UClass* ArenaClass = LoadClass<ASH_Arena>(nullptr, *Path);
+	if (!ArenaClass)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[SH_RLDirector] -SHArena: '%s' 에서 ASH_Arena 클래스를 찾지 못했다."), *Path);
+		return false;
+	}
+
+	FArrayProperty* TemplatesProperty =
+		FindFProperty<FArrayProperty>(ALearningAgentsGymsManager::StaticClass(), TEXT("GymTemplates"));
+	const FStructProperty* InnerProperty = TemplatesProperty ? CastField<FStructProperty>(TemplatesProperty->Inner) : nullptr;
+	// ★ FSpawnGymInfo 는 모듈 밖으로 내보내지 않은(API 매크로 없는) USTRUCT 라 StaticStruct() 를 부르면 링크가 안 된다.
+	//   멤버도 메모리 배치에 기대지 않고 리플렉션으로 찾는다.
+	const FClassProperty* GymClassProperty = InnerProperty
+		? FindFProperty<FClassProperty>(InnerProperty->Struct, TEXT("GymClass")) : nullptr;
+	if (!GymClassProperty)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[SH_RLDirector] -SHArena: ALearningAgentsGymsManager::GymTemplates 를 찾지 못했다(엔진 버전이 바뀌었나?)."));
+		return false;
+	}
+
+	FScriptArrayHelper Templates(TemplatesProperty, TemplatesProperty->ContainerPtrToValuePtr<void>(GymsManager.Get()));
+	if (Templates.Num() == 0)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[SH_RLDirector] -SHArena: GymTemplates 가 비어 있다."));
+		return false;
+	}
+
+	for (int32 Index = 0; Index < Templates.Num(); ++Index)
+	{
+		void* Element = GymClassProperty->ContainerPtrToValuePtr<void>(Templates.GetRawPtr(Index));
+		const UObject* Previous = GymClassProperty->GetObjectPropertyValue(Element);
+		UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] -SHArena: 템플릿 %d  %s → %s"), Index,
+			Previous ? *Previous->GetName() : TEXT("(없음)"), *ArenaClass->GetName());
+		GymClassProperty->SetObjectPropertyValue(Element, ArenaClass);
+	}
+
+	if (const ASH_Arena* Defaults = GetDefault<ASH_Arena>(ArenaClass))
+	{
+		FString Shape;
+		switch (Defaults->BoundaryShape)
+		{
+		case ESHArenaShape::Rectangle:
+			Shape = FString::Printf(TEXT("직사각형 %.0f x %.0f cm"), Defaults->RectHalfExtents.X * 2.0, Defaults->RectHalfExtents.Y * 2.0);
+			break;
+		case ESHArenaShape::LShape:
+			Shape = FString::Printf(TEXT("ㄱ자 다리 %.0f cm, 폭 %.0f cm"), Defaults->LegLength, Defaults->LegHalfWidth * 2.0f);
+			break;
+		default:
+			Shape = FString::Printf(TEXT("팔각형 반경 %.0f cm"), Defaults->ArenaRadius);
+			break;
+		}
+		UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] -SHArena: %s — 팀당 %d명, 경계 %s"),
+			*ArenaClass->GetName(), Defaults->UnitsPerTeam, *Shape);
+	}
+	return true;
 }
 
 void ASH_RLDirector::ApplyTrainingRenderSettings()
@@ -479,31 +567,43 @@ void ASH_RLDirector::VerifyArenaLayout() const
 	// 월드 원점에 겹쳐 있는지 — ProjectPointToGym 의 NavMesh 경로에 걸리면
 	// 모든 좌표가 (0,0,0) 이 되므로 가장 먼저 확인해야 할 증상이다.
 	int32 AtOrigin = 0;
-	float MinPairDistance = TNumericLimits<float>::Max();
-	float ArenaRadius = 0.0f;
+	int32 OverlappingPairs = 0;
+
+	// ★ 예전에는 "중심 사이 거리 > 2 x ArenaRadius" 로 봤다. 원형 아레나에서만 맞는 검사라
+	//   길쭉한 복도(Rectangle)는 짧은 축으로 촘촘히 놓여도 정상인데 겹친다고 나온다.
+	//   그래서 실제 콜리전 바운드(GetGymExtents) 두 상자가 XY 에서 겹치는지 본다.
+	TArray<FBox2D> Bounds;
+	Bounds.Reserve(Arenas.Num());
+	for (const ASH_Arena* Arena : Arenas)
+	{
+		FVector Min, Max;
+		Arena->GetGymExtents(Min, Max);
+		const FVector L = Arena->GetActorLocation();
+		Bounds.Add(FBox2D(FVector2D(L.X + Min.X, L.Y + Min.Y), FVector2D(L.X + Max.X, L.Y + Max.Y)));
+	}
 
 	for (int32 i = 0; i < Arenas.Num(); ++i)
 	{
-		const FVector Li = Arenas[i]->GetActorLocation();
-		ArenaRadius = Arenas[i]->ArenaRadius;
-
-		if (Li.SizeSquared() < 1.0f)
+		if (Arenas[i]->GetActorLocation().SizeSquared() < 1.0f)
 		{
 			++AtOrigin;
 		}
-
 		for (int32 j = i + 1; j < Arenas.Num(); ++j)
 		{
-			MinPairDistance = FMath::Min(MinPairDistance, FVector::Dist2D(Li, Arenas[j]->GetActorLocation()));
+			// 맞닿기만 한 것은 겹침이 아니다 — 1 cm 줄여서 본다.
+			if (Bounds[i].ExpandBy(-1.0).Intersect(Bounds[j].ExpandBy(-1.0)))
+			{
+				++OverlappingPairs;
+			}
 		}
 	}
 
-	const float RequiredPitch = 2.0f * ArenaRadius;
+	const FVector2D Size = Bounds[0].GetSize();
 
 	UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] --- 아레나 배치 검증 ---"));
 	UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] 스폰된 아레나       : %d개"), Arenas.Num());
-	UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] 최소 중심간 거리    : %.0f cm (겹치지 않으려면 > %.0f)"),
-		MinPairDistance, RequiredPitch);
+	UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] 아레나 클래스       : %s (바운드 %.0f x %.0f cm, 팀당 %d명)"),
+		*Arenas[0]->GetClass()->GetName(), Size.X, Size.Y, Arenas[0]->UnitsPerTeam);
 	UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] 첫 아레나 위치      : %s"), *Arenas[0]->GetActorLocation().ToString());
 	UE_LOG(LogTemp, Display, TEXT("[SH_RLDirector] 마지막 아레나 위치  : %s"), *Arenas.Last()->GetActorLocation().ToString());
 
@@ -514,11 +614,11 @@ void ASH_RLDirector::VerifyArenaLayout() const
 			AtOrigin);
 	}
 
-	if (Arenas.Num() > 1 && MinPairDistance < RequiredPitch)
+	if (OverlappingPairs > 0)
 	{
 		UE_LOG(LogTemp, Error,
-			TEXT("[SH_RLDirector] ★ 아레나가 겹친다. GymsManager 의 GymsSpacing 을 올릴 것 ")
-			TEXT("(피치 = GymsSpacing + 바닥폭)."));
+			TEXT("[SH_RLDirector] ★ 아레나 %d쌍이 겹친다. GymsManager 의 GymsSpacing 을 올릴 것 ")
+			TEXT("(피치 = GymsSpacing + 바닥폭)."), OverlappingPairs);
 	}
 	else if (Arenas.Num() > 1)
 	{

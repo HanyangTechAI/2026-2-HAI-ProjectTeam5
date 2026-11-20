@@ -21,6 +21,23 @@ enum class ESHRoundEnd : uint8
 	MutualWipe,  // 같은 틱에 양 팀 전멸 — 승자 없음. 판정은 Timeout 과 같다
 };
 
+/** 아레나 경계의 모양. */
+UENUM(BlueprintType)
+enum class ESHArenaShape : uint8
+{
+	/** 정팔각형 벽. 크기는 ArenaRadius 하나로 정한다 (기본, 기존 아레나 전부). */
+	Octagon,
+	/** 직사각형 벽 4개. 크기는 RectHalfExtents 로 정한다 — 일자 복도형 맵용. */
+	Rectangle,
+	/**
+	 *  ㄱ자 복도. 크기는 LegLength · LegHalfWidth 로 정한다.
+	 *  아레나 중심(액터 위치)이 **꺾이는 곳의 한가운데**이고, 두 다리가 −X 와 −Y 로 뻗는다.
+	 *  위에서 +X 를 화면 위, +Y 를 화면 오른쪽으로 보면(인게임 카메라) ㄱ 모양이다.
+	 *  팀 진영 0 은 −X 다리 끝, 진영 1 은 −Y 다리 끝에서 시작한다(GetSideDirection).
+	 */
+	LShape,
+};
+
 /** 끝난 라운드 하나의 기록. ASH_CombatTrainer 의 리포트가 읽고 비운다. */
 struct FSHRoundRecord
 {
@@ -89,6 +106,68 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SH|Arena")
 	bool bAutoBuildBoundary = true;
 
+	/**
+	 *  경계 모양. Octagon(기본)은 지금까지와 같다.
+	 *
+	 *  Rectangle 이면 C++ 벽 8개 중 4개로 직사각형을 만들고(나머지 4개는 숨기고 콜리전을 끈다),
+	 *  바닥을 RectHalfExtents 에 맞춘다. 유닛이 있을 수 있는 영역(클램프 · 랜덤 위치 · 인게임 배치 칸)도
+	 *  원판이 아니라 이 직사각형이 된다 — IsInsidePlayArea 참조.
+	 *
+	 *  ★ Rectangle 에서 ArenaRadius 는 직접 정하지 않는다. OnConstruction 이 직사각형의 반대각선
+	 *  (= 중심에서 가장 먼 모서리까지 거리)으로 덮어쓴다. 축소 구역의 시작 반경, 관측의 ZoneRadius/ZoneMargin
+	 *  정규화가 ArenaRadius 를 쓰는데, 반대각선이어야 라운드 시작 때 구석까지 구역 안에 들어온다.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SH|Arena")
+	ESHArenaShape BoundaryShape = ESHArenaShape::Octagon;
+
+	/** Rectangle 경계의 벽 안쪽 면까지 반폭(cm). X = 길이 방향(두 팀이 마주보는 축), Y = 폭 방향. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SH|Arena",
+		meta = (EditCondition = "BoundaryShape == ESHArenaShape::Rectangle", EditConditionHides))
+	FVector2D RectHalfExtents = FVector2D(2200.0, 550.0);
+
+	/** LShape: 꺾이는 곳 중심(아레나 중심)에서 다리 끝 벽 안쪽 면까지 거리(cm). 두 다리가 같다 — 양 팀 조건이 같게. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SH|Arena",
+		meta = (ClampMin = "200.0", EditCondition = "BoundaryShape == ESHArenaShape::LShape", EditConditionHides))
+	float LegLength = 2200.0f;
+
+	/** LShape: 복도 반폭(cm). 다리의 중심선에서 벽 안쪽 면까지. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SH|Arena",
+		meta = (ClampMin = "100.0", EditCondition = "BoundaryShape == ESHArenaShape::LShape", EditConditionHides))
+	float LegHalfWidth = 550.0f;
+
+	/**
+	 *  진영(스폰 쪽)의 방향. 아레나 중심에서 그 진영의 스폰 지점을 향하는 단위 벡터(XY).
+	 *  진영 0 = −X. 진영 1 = +X (Octagon · Rectangle) 또는 −Y (LShape).
+	 *  ★ 팀이 아니라 진영이다 — 진영 교대 중이면 팀 0 이 진영 1 에 선다(GetSpawnSide).
+	 */
+	FVector2D GetSideDirection(int32 SpawnSide) const;
+
+	/** 이번 라운드에 팀이 서는 진영. AreSidesSwapped 이면 반대다. */
+	int32 GetSpawnSide(int32 Team) const { return AreSidesSwapped() ? 1 - Team : Team; }
+
+	/**
+	 *  "적 진영 쪽" 기준점(월드). 적 진영 방향으로 Fraction x (Octagon · Rectangle = ArenaRadius, LShape = LegLength).
+	 *  행동 트리가 적을 못 봤을 때 "앞쪽" 으로 쓴다.
+	 */
+	FVector GetEnemySidePoint(int32 Team, float Fraction) const;
+
+	/**
+	 *  적을 찾으러 전진할 때의 목표 지점(월드, Z 는 From 과 같다). 스크립트 봇 · 행동 트리가 쓴다.
+	 *  Octagon · Rectangle = 아레나 반대편(중심에 대한 대칭점) — 예전 그대로.
+	 *  LShape = 반대편이 벽 너머라 그대로 가면 벽에 붙는다. 자기 다리에 있으면 꺾이는 곳(중심)으로,
+	 *  꺾이는 곳이나 적 다리에 들어서면 적 진영 다리 끝으로 간다.
+	 */
+	FVector GetAdvanceGoal(const FVector& From, int32 Team) const;
+
+	/**
+	 *  아레나 로컬 XY 점이 유닛이 설 수 있는 영역 안인가. 경계에서 Margin(cm)만큼 안쪽까지만 인정한다.
+	 *  Octagon = 반경 ArenaRadius − Margin 의 원판, Rectangle = 반폭 RectHalfExtents − Margin 의 직사각형.
+	 */
+	bool IsInsidePlayArea(const FVector2D& Local, float Margin) const;
+
+	/** 아레나 로컬 XY 점을 위 영역 안으로 당긴다. 이미 안이면 그대로. */
+	FVector2D ClampToPlayArea(const FVector2D& Local, float Margin) const;
+
 	/** 벽 안쪽 면까지의 반경(cm). bAutoBuildBoundary 가 켜져 있으면
 	 *  바닥 크기·벽 배치·클램프 반경이 전부 이 값에서 나온다.
 	 *
@@ -99,7 +178,8 @@ public:
 	 *  상한은 할인 지평이 정한다: gamma=0.995 @ 20Hz 이면 1/(1-gamma) = 200스텝 = 10초이고,
 	 *  MaxWalkSpeed 500cm/s 로 아레나를 가로지르는 시간이 그보다 길면 정책이
 	 *  "적에게 접근한다"의 가치를 원리적으로 볼 수 없다. 1750 이면 횡단 7.0초. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SH|Arena", meta = (ClampMin = "200.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SH|Arena",
+		meta = (ClampMin = "200.0", EditCondition = "BoundaryShape == ESHArenaShape::Octagon"))
 	float ArenaRadius = 1750.0f;
 
 	/** 유닛 캡슐이 벽을 파고들지 않도록 클램프를 안쪽으로 당기는 여유(cm). 캡슐 반경 42 + 여유. */
@@ -413,6 +493,9 @@ protected:
 	void ValidateTeamAuthoring() const;
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;
+
+	/** Rectangle · LShape 경계면 ArenaRadius 를 중심에서 가장 먼 모서리까지 거리로 맞춘다(BoundaryShape 주석). Octagon 이면 아무것도 안 한다. */
+	void SyncDerivedRadius();
 
 	/** 바닥 스케일 · 벽 8개 배치를 ArenaRadius 에서 다시 계산한다.
 	 *  bAutoBuildBoundary 가 꺼져 있으면 C++ 벽을 숨기고 아무것도 계산하지 않는다. */

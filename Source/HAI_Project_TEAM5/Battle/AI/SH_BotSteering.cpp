@@ -161,9 +161,11 @@ namespace SHBot
 		{
 			return Unit.GetActorLocation() + Unit.GetActorForwardVector() * 1000.0;
 		}
-		// 보드는 회전하지 않는다는 가정(ASH_BattleBoard 주석) — 팀 0 은 서쪽(−X)에서 시작해 동쪽을 본다.
-		const bool bTeam0 = Unit.CombatStats && Unit.CombatStats->TeamId == 0;
-		const FVector Center = Arena->GetActorLocation();
-		return FVector(Center.X + (bTeam0 ? 1.0 : -1.0) * Arena->ArenaRadius * 0.6, Center.Y, Unit.GetActorLocation().Z);
+		// 보드는 회전하지 않는다는 가정(ASH_BattleBoard 주석). 팔각형 · 일자 복도는 (팀 0 기준) 동쪽 +X 로
+		// ArenaRadius x 0.6, ㄱ자는 적 다리(−Y) 쪽으로 LegLength x 0.6 — ASH_Arena::GetEnemySidePoint.
+		const int32 Team = Unit.CombatStats ? static_cast<int32>(Unit.CombatStats->TeamId) : 0;
+		FVector Point = Arena->GetEnemySidePoint(Team, 0.6f);
+		Point.Z = Unit.GetActorLocation().Z;
+		return Point;
 	}
 }

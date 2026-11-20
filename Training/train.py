@@ -46,7 +46,10 @@ OPPONENT_PREFIXES = ("-SHSelfPlay=", "-SHOpponentMix=", "-SHMixSnapshot=", "-SHM
                      "-SHOpponentPoolOnly=", "-SHOpponentSwap=")
 
 # 이 실행기가 직접 정하는 옵션. run.json 의 추가 옵션으로 덮어쓰면 실행기가 망가지므로 막는다.
-RESERVED_PREFIXES = ("-SHSnapshotRoot=", "-SHSnapshotFlat=", "-SHSnapshotInterval=", "-SHResume=",
+# 학습 맵(아레나)을 정하는 옵션. run.json 의 "map" 으로만 정한다(map_args).
+MAP_PREFIXES = ("-SHArena=", "-GymsCountOverride")
+
+RESERVED_PREFIXES = MAP_PREFIXES + ("-SHSnapshotRoot=", "-SHSnapshotFlat=", "-SHSnapshotInterval=", "-SHResume=",
                      "-SHTrainSeconds=", "-SHEval=", "-abslog=") + OPPONENT_PREFIXES
 
 SNAPSHOT_DIR_RE = re.compile(r"^cum(\d{3})h(\d{2})m(?:_\d+)?$")
@@ -447,7 +450,8 @@ def build_command(ue_cmd: Path, run_dir: Path, config: dict, resume: Path | None
                f"-SHSnapshotRoot={run_dir.as_posix()}", "-SHSnapshotFlat=1", f"-SHSnapshotInterval={interval}"]
     # 옛 run.json 의 ue_args 에 남은 상대 옵션(-SHSelfPlay=1 등)은 빼고, "opponent" 에서 다시 만든다.
     # ★ 같은 옵션이 두 번 있으면 언리얼(FParse::Value)은 앞의 것을 쓴다 — 섞이면 고른 상대가 무시된다.
-    command += [a for a in config["ue_args"] if not a.startswith(OPPONENT_PREFIXES)]
+    command += [a for a in config["ue_args"] if not a.startswith(OPPONENT_PREFIXES + MAP_PREFIXES)]
+    command += map_args(map_of(config))
     command += opponent_args(opponent_of(config))
     if resume is not None:
         command.append(f"-SHResume={resume.as_posix()}")
@@ -538,6 +542,12 @@ def train(name: str, config: dict, git_mode: str, session_hours: float | None, s
             say(f"언리얼 종료(코드 {process.returncode}, {hours_minutes(ran)} 동안 실행).")
             wait_and_publish(run_dir, git_mode)
 
+            # 맵(-SHArena)을 못 찾아 디렉터가 스스로 끝낸 경우 — 다시 시작해도 같다. 종료 코드는 엔진이 0 으로 덮어써서 로그로 본다.
+            if log_path.exists() and ARENA_FAILURE_TEXT in log_path.read_text(encoding="utf-8", errors="replace"):
+                say(f"언리얼이 학습 맵 {arena_name(map_of(config))} 을(를) 불러오지 못했다 — 멈춘다. "
+                    f"빌드가 최신인지(-SHArena 는 2026-11-20 빌드부터), 맵 BP 가 Content/RL 에 있는지 확인할 것.")
+                break
+
             if session_end is not None and time.time() >= session_end - 60:
                 say("정한 학습 시간을 다 썼다.")
                 break
@@ -590,7 +600,7 @@ def save_config(config: dict) -> None:
 
 
 def create_config(name: str, initial: str | None, note: str, extra_args: list[str], interval_minutes: float,
-                  opponent: dict | None = None) -> dict:
+                  opponent: dict | None = None, train_map: dict | None = None) -> dict:
     bad = [a for a in extra_args if a.startswith(RESERVED_PREFIXES)]
     if bad:
         raise ValueError(f"이 옵션은 실행기가 정한다: {' '.join(bad)}")
@@ -601,11 +611,118 @@ def create_config(name: str, initial: str | None, note: str, extra_args: list[st
         "ue_args": DEFAULT_UE_ARGS + list(extra_args),
         "interval_minutes": interval_minutes,
         "initial_snapshot": initial,
+        "map": train_map or default_map(),
         "opponent": opponent or {"kind": "self"},
         "note": note,
     }
     save_config(config)
     return config
+
+
+# --- 학습 맵 ----------------------------------------------------------------------
+#
+# 맵 = 아레나 BP(Content/RL/BP_SHArena*). 레벨은 늘 Lvl_SHTrain 하나이고, 그 레벨의 GymsManager 가 스폰할
+# 아레나 클래스를 -SHArena=<BP 이름> 으로 바꾼다(ASH_RLDirector::ApplyArenaOverride). 아레나 개수는 엔진의 -GymsCountOverride=N.
+# 팀 인원(10 대 10, 1 대 1 …)은 아레나 BP 의 UnitsPerTeam 이 정한다 — 관측 크기는 인원과 상관없어 모델을 서로 이어 쓸 수 있다.
+#
+# run.json 의 "map": {"arena": "BP_SHArena_Corridor", "arenas": 160}
+#   arena  None = 레벨에 지정된 기본 아레나(BP_SHArena) — 옛 run.json 은 "map" 이 없고 이것과 같다.
+#   arenas None = 레벨의 기본 개수(16).
+
+ARENA_DIR = ROOT / "Content" / "RL"
+ARENA_FAILURE_TEXT = "를 적용하지 못해 종료한다"   # ASH_RLDirector::BeginPlay 의 로그 문구
+DEFAULT_ARENA = "BP_SHArena"
+DEFAULT_ARENA_COUNT = 16
+
+# 알려진 맵. 여기 없는 Content/RL/BP_SHArena*.uasset 도 목록에 나온다(설명 없이).
+KNOWN_MAPS = {
+    "BP_SHArena":          {"label": "기본 원형 — 팔각형 반경 1,750 (누적 학습에 써 온 맵)", "team": "10 대 10", "arenas": 16},
+    "BP_SHArena_Complex":  {"label": "복잡한 원형 — 팔각형 반경 2,450, 엄폐물 22개", "team": "10 대 10", "arenas": 16},
+    "BP_SHArena_Corridor": {"label": "ㄱ자 복도 — 다리 22 m x 2, 폭 11 m, 꺾이는 곳에서 만난다", "team": "1 대 1", "arenas": 160},
+}
+MAP_ALIASES = {"basic": "BP_SHArena", "default": "BP_SHArena", "complex": "BP_SHArena_Complex",
+               "corridor": "BP_SHArena_Corridor"}
+
+
+def default_map() -> dict:
+    return {"arena": None, "arenas": None}
+
+
+def map_of(config: dict) -> dict:
+    return config.get("map") or default_map()
+
+
+def arena_name(train_map: dict) -> str:
+    return train_map.get("arena") or DEFAULT_ARENA
+
+
+def arena_count(train_map: dict) -> int:
+    return int(train_map.get("arenas") or DEFAULT_ARENA_COUNT)
+
+
+def map_catalog() -> list[str]:
+    """고를 수 있는 아레나 BP 이름. 알려진 것 먼저, 그 다음 Content/RL 에서 찾은 나머지."""
+    found = sorted(p.stem for p in ARENA_DIR.glob("BP_SHArena*.uasset"))
+    return [n for n in KNOWN_MAPS if n in found] + [n for n in found if n not in KNOWN_MAPS]
+
+
+def resolve_map(value: str, arenas: int | None = None) -> dict:
+    """명령줄 --map 값(별칭 basic/complex/corridor 또는 BP 이름) → run.json 의 "map". 없는 BP 면 ValueError."""
+    name = MAP_ALIASES.get(value.lower(), value)
+    if not (ARENA_DIR / f"{name}.uasset").exists():
+        raise ValueError(f"맵 '{value}' 가 없다 — Content/RL/{name}.uasset. 있는 맵: {', '.join(map_catalog())}")
+    if arenas is None:
+        arenas = KNOWN_MAPS.get(name, {}).get("arenas")
+    if name == DEFAULT_ARENA and arenas in (None, DEFAULT_ARENA_COUNT):
+        return default_map()   # 레벨 기본값과 같다 — 옛 학습과 명령줄이 똑같아진다
+    return {"arena": name, "arenas": arenas}
+
+
+def map_args(train_map: dict) -> list[str]:
+    args = []
+    if train_map.get("arena"):
+        args.append(f"-SHArena={train_map['arena']}")
+    if train_map.get("arenas"):
+        args.append(f"-GymsCountOverride={int(train_map['arenas'])}")
+    return args
+
+
+def describe_map(train_map: dict) -> str:
+    name = arena_name(train_map)
+    info = KNOWN_MAPS.get(name, {})
+    team = f", {info['team']}" if info.get("team") else ""
+    return f"{name} x {arena_count(train_map)}{team}" + (f" — {info['label']}" if info.get("label") else "")
+
+
+def short_map(train_map: dict) -> str:
+    name = arena_name(train_map)
+    return {"BP_SHArena": "기본", "BP_SHArena_Complex": "복잡", "BP_SHArena_Corridor": "복도"}.get(
+        name, name.replace("BP_SHArena_", ""))
+
+
+def change_map(config: dict, new: dict) -> None:
+    """이어서 학습할 때 맵을 바꾼다. 언제 무엇에서 무엇으로 바꿨는지 run.json 에 남긴다."""
+    old = map_of(config)
+    if old == new:
+        return
+    latest = latest_snapshot(TRAINING_DIR / config["name"])
+    config.setdefault("map_history", []).append({
+        "at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "from_cumulative": hours_minutes(cumulative_seconds(latest)) if latest else "000h00m",
+        "from": old, "to": new})
+    config["map"] = new
+    save_config(config)
+
+
+def scale_mix_for_map(opponent: dict, train_map: dict) -> dict:
+    """혼합 상대의 아레나 수가 맵의 아레나 수보다 크면 비율(16 중 6 · 2)대로 줄인다."""
+    if opponent.get("kind") != "mix":
+        return opponent
+    total = arena_count(train_map)
+    snap, bot = int(opponent.get("snapshot_arenas", 6)), int(opponent.get("bot_arenas", 2))
+    if snap + bot <= total:
+        return opponent
+    return {**opponent, "snapshot_arenas": total * 6 // 16, "bot_arenas": total * 2 // 16}
 
 
 # --- 학습 상대 --------------------------------------------------------------------
@@ -790,7 +907,7 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
         print(line(row))
 
 
-RUN_HEADERS = ["번호", "이름", "상태", "누적", "스냅샷", "마지막 저장", "push", "상대", "메모"]
+RUN_HEADERS = ["번호", "이름", "상태", "누적", "스냅샷", "마지막 저장", "push", "맵", "상대", "메모"]
 
 
 def run_rows(runs: list[Path]) -> list[list[str]]:
@@ -808,6 +925,7 @@ def run_rows(runs: list[Path]) -> list[list[str]]:
             str(len(snapshots)),
             saved_at(latest) if latest else "-",
             f"{pushed}/{len(snapshots)}" if snapshots else "-",
+            short_map(map_of(config)),
             short_opponent(opponent_of(config)),
             (config.get("note") or "")[:30],
         ])
@@ -832,11 +950,15 @@ def show_detail(run_dir: Path) -> None:
     for restart in config.get("start_history", []):
         source = "처음부터" if restart["from"] == "scratch" else restart["from"]
         print(f"                  ↳ {restart['at'][:16]} 다시 시작: {source} (그때 최신 {restart['latest_before']})")
+    print(f"    학습 맵     : {describe_map(map_of(config))}")
+    for change in config.get("map_history", []):
+        print(f"                  ↳ {change['at'][:16]} (누적 {change['from_cumulative']}) "
+              f"{describe_map(change['from'])} → {describe_map(change['to'])}")
     print(f"    학습 상대   : {describe_opponent(opponent_of(config))}")
     for change in config.get("opponent_history", []):
         print(f"                  ↳ {change['at'][:16]} (누적 {change['from_cumulative']}) "
               f"{describe_opponent(change['from'])} → {describe_opponent(change['to'])}")
-    print(f"    언리얼 옵션 : {' '.join(a for a in config.get('ue_args', []) if not a.startswith(OPPONENT_PREFIXES))}")
+    print(f"    언리얼 옵션 : {' '.join(a for a in config.get('ue_args', []) if not a.startswith(OPPONENT_PREFIXES + MAP_PREFIXES))}")
     print(f"    스냅샷 주기 : {config.get('interval_minutes', 60):g}분")
     print(f"    메모        : {config.get('note') or '-'}")
     print(f"    로그        : {rel(run_dir / 'logs')}")
@@ -906,8 +1028,8 @@ def ask_git_mode() -> str:
     return {"2": "commit", "3": "off"}.get(value, "push")
 
 
-def ask_opponent(current: dict | None = None) -> dict:
-    """학습 상대를 고른다. current 가 있으면 그게 기본값이다."""
+def ask_opponent(current: dict | None = None, train_map: dict | None = None) -> dict:
+    """학습 상대를 고른다. current 가 있으면 그게 기본값이다. train_map 은 혼합의 아레나 수를 정하는 데 쓴다."""
     kinds = ["self", "bot", "model", "mix"]
     default = str(kinds.index(current.get("kind", "self")) + 1) if current else "1"
     print("\n  학습 상대:" + (f"  (지금: {describe_opponent(current)})" if current else ""))
@@ -925,13 +1047,14 @@ def ask_opponent(current: dict | None = None) -> dict:
             if choice == "3":
                 return {"kind": "model", "snapshot": pick_model("상대 모델")}
             if choice == "4":
-                return ask_mix(current if current and current.get("kind") == "mix" else None)
+                return ask_mix(current if current and current.get("kind") == "mix" else None,
+                               arena_count(train_map or default_map()))
             print("    1~4 중에서 고른다.")
         except Cancel:
             continue
 
 
-def ask_mix(current: dict | None) -> dict:
+def ask_mix(current: dict | None, total: int = DEFAULT_ARENA_COUNT) -> dict:
     def ask_count(prompt: str, default: int) -> int:
         while True:
             value = ask(prompt, str(default))
@@ -939,9 +1062,14 @@ def ask_mix(current: dict | None) -> dict:
                 return int(value)
             print("    0 이상의 정수로 적는다.")
 
-    print("    아레나 16개 중 일부를 과거 스냅샷 · 봇 상대로 돌리고, 나머지는 self-play 다.")
-    snapshot_arenas = ask_count("과거 스냅샷 상대 아레나 수", int((current or {}).get("snapshot_arenas", 6)))
-    bot_arenas = ask_count("스크립트 봇 상대 아레나 수", int((current or {}).get("bot_arenas", 2)))
+    print(f"    아레나 {total}개 중 일부를 과거 스냅샷 · 봇 상대로 돌리고, 나머지는 self-play 다.")
+    current = scale_mix_for_map(current, {"arenas": total}) if current else None
+    while True:
+        snapshot_arenas = ask_count("과거 스냅샷 상대 아레나 수", int((current or {}).get("snapshot_arenas", total * 6 // 16)))
+        bot_arenas = ask_count("스크립트 봇 상대 아레나 수", int((current or {}).get("bot_arenas", total * 2 // 16)))
+        if snapshot_arenas + bot_arenas <= total:
+            break
+        print(f"    합이 아레나 수({total})를 넘는다.")
     print("\n    스냅샷 풀(10분마다 여기서 상대를 바꾼다. 지는 상대일수록 자주):")
     print("      1) 이 학습이 저장한 스냅샷만 (기본)")
     print("      2) + 다른 학습의 스냅샷 전부 (Training/<이름>)")
@@ -970,6 +1098,37 @@ def ask_mix(current: dict | None) -> dict:
                 break
             print("    없는 폴더다.")
     return {"kind": "mix", "snapshot_arenas": snapshot_arenas, "bot_arenas": bot_arenas, "pool": pool}
+
+
+def ask_map(current: dict | None = None) -> dict:
+    """학습 맵(아레나 BP)과 아레나 개수를 고른다. current 가 있으면 그게 기본값이다."""
+    names = map_catalog()
+    if not names:
+        print("    Content/RL 에 BP_SHArena*.uasset 이 없다 — 레벨 기본 아레나를 쓴다.")
+        return default_map()
+    current_name = arena_name(current) if current else DEFAULT_ARENA
+    default = str(names.index(current_name) + 1) if current_name in names else "1"
+    print("\n  학습 맵:" + (f"  (지금: {describe_map(current)})" if current else ""))
+    for index, name in enumerate(names, start=1):
+        info = KNOWN_MAPS.get(name, {})
+        detail = f"{info.get('team', '인원은 BP 의 UnitsPerTeam')}, 기본 아레나 {info.get('arenas', DEFAULT_ARENA_COUNT)}개"
+        print(f"    {index}) {name:<22} {info.get('label', '(설명 없음)')}  [{detail}]")
+    print("    ★ 관측 크기는 맵 · 인원과 상관없다 — 어느 맵에서 학습한 모델이든 다른 맵에서 이어서 학습할 수 있다.")
+    while True:
+        choice = ask("선택", default)
+        if choice.isdigit() and 1 <= int(choice) <= len(names):
+            name = names[int(choice) - 1]
+            break
+        print(f"    1~{len(names)} 중에서 고른다.")
+
+    suggested = (arena_count(current) if current and arena_name(current) == name
+                 else KNOWN_MAPS.get(name, {}).get("arenas", DEFAULT_ARENA_COUNT))
+    print("    아레나 수: 1 대 1 맵은 아레나당 유닛이 2명이라, 10 대 10 (16개 = 유닛 320) 과 비슷한 수집량을 내려면 많이 둔다.")
+    while True:
+        value = ask("아레나 수", str(suggested))
+        if value.isdigit() and 1 <= int(value) <= 400:
+            return resolve_map(name, int(value))
+        print("    1~400 사이 정수로 적는다.")
 
 
 def ask_start_new() -> str | None:
@@ -1071,7 +1230,8 @@ def menu_new() -> tuple[str, dict, str, float | None, str | None]:
             break
 
     initial = ask_start_new()
-    opponent = ask_opponent()
+    train_map = ask_map()
+    opponent = ask_opponent(train_map=train_map)
     note = ask("메모 — 무엇을 바꿨는지 (빈칸 가능)")
     print(f"\n  기본 언리얼 옵션: {' '.join(DEFAULT_UE_ARGS)}")
     while True:
@@ -1087,6 +1247,7 @@ def menu_new() -> tuple[str, dict, str, float | None, str | None]:
     print("\n  ── 확인 ──")
     print(f"    이름        : {name}  →  {rel(TRAINING_DIR / name)}/")
     print(f"    시작 정책   : {initial or '처음부터'}")
+    print(f"    학습 맵     : {describe_map(train_map)}")
     print(f"    학습 상대   : {describe_opponent(opponent)}")
     print(f"    메모        : {note or '-'}")
     print(f"    언리얼 옵션 : {' '.join(DEFAULT_UE_ARGS + extra)}")
@@ -1094,7 +1255,7 @@ def menu_new() -> tuple[str, dict, str, float | None, str | None]:
     print(f"    스냅샷      : {interval:g}분마다, {GIT_MODE_TEXT[git_mode]}")
     if not ask_yes("시작할까"):
         raise Cancel
-    config = create_config(name, initial, note, extra, interval, opponent)
+    config = create_config(name, initial, note, extra, interval, opponent, train_map)
     return name, config, git_mode, hours, None
 
 
@@ -1109,13 +1270,19 @@ def menu_resume() -> tuple[str, dict, str, float | None, str | None]:
         raise Cancel
     config = load_config(run_dir.name)
     current = opponent_of(config)
+    current_map = map_of(config)
     start_point = ask_start_existing(run_dir)
+    print(f"\n    학습 맵: {describe_map(current_map)}")
+    new_map = ask_map(current_map) if ask_yes("학습 맵을 바꿀까", default=False) else current_map
     print(f"\n    학습 상대: {describe_opponent(current)}")
-    new_opponent = ask_opponent(current) if ask_yes("학습 상대를 바꿀까", default=False) else current
+    new_opponent = ask_opponent(current, new_map) if ask_yes("학습 상대를 바꿀까", default=False) else current
+    new_opponent = scale_mix_for_map(new_opponent, new_map)
     hours = ask_hours()
     git_mode = ask_git_mode()
     print("\n  ── 확인 ──")
     print(f"    시작 지점   : {describe_start(run_dir, start_point, config)}")
+    print(f"    학습 맵     : {describe_map(new_map)}" +
+          (f"  (바꿈: {describe_map(current_map)} → )" if new_map != current_map else ""))
     print(f"    학습 상대   : {describe_opponent(new_opponent)}" +
           (f"  (바꿈: {describe_opponent(current)} → )" if new_opponent != current else ""))
     print(f"    실행 시간   : {f'{hours:g}시간' if hours else 'Ctrl+C 로 멈출 때까지'}")
@@ -1123,6 +1290,7 @@ def menu_resume() -> tuple[str, dict, str, float | None, str | None]:
     if not ask_yes("시작할까"):
         raise Cancel
     # 시작을 확정한 뒤에만 run.json 을 바꾼다.
+    change_map(config, new_map)
     change_opponent(config, new_opponent)
     record_start(config, start_point)
     return run_dir.name, config, git_mode, hours, start_point
@@ -1208,6 +1376,12 @@ def start(name: str, config: dict, git_mode: str, hours: float | None, start_poi
             print("  로그인 없이 진행한다 — 스냅샷은 로컬에 커밋만 하고 push 하지 않는다. (메뉴 4번에서 나중에 설정)")
             git_mode = "commit"
 
+    train_map = map_of(config)
+    if train_map.get("arena") and not (ARENA_DIR / f"{train_map['arena']}.uasset").exists():
+        print(f"\n  학습 맵 {train_map['arena']} 이(가) 없다 — Content/RL/{train_map['arena']}.uasset. "
+              f"있는 맵: {', '.join(map_catalog())}")
+        return
+
     _log_file = run_dir / "logs" / "train_py.log"
     _log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1217,10 +1391,11 @@ def start(name: str, config: dict, git_mode: str, hours: float | None, start_poi
     print(f"    시작 정책   : {origin}")
     print(f"    실행 시간   : {f'{hours:g}시간' if hours else '제한 없음 — 이 창에서 Ctrl+C 로 멈춘다'}")
     print(f"    스냅샷      : {config.get('interval_minutes', 60):g}분마다 → {rel(run_dir)}/cumXXXhYYm/")
+    print(f"    학습 맵     : {describe_map(map_of(config))}")
     print(f"    학습 상대   : {describe_opponent(opponent_of(config))}")
     print(f"    git         : {GIT_MODE_TEXT[git_mode]}")
-    print(f"    언리얼 옵션 : {' '.join(a for a in config['ue_args'] if not a.startswith(OPPONENT_PREFIXES))} "
-          f"{' '.join(opponent_args(opponent_of(config)))}")
+    print(f"    언리얼 옵션 : {' '.join(a for a in config['ue_args'] if not a.startswith(OPPONENT_PREFIXES + MAP_PREFIXES))} "
+          f"{' '.join(map_args(map_of(config)) + opponent_args(opponent_of(config)))}")
     print("-" * 56)
     say(f"설정: {json.dumps(config, ensure_ascii=False)} / git={git_mode} / hours={hours}")
     train(name, config, git_mode=git_mode, session_hours=hours, start_point=start_point)
@@ -1243,6 +1418,9 @@ def main() -> None:
                         help="이미 있는 학습을 어디서부터: latest(기본) | scratch(처음부터) | <학습 이름 또는 스냅샷 폴더>")
     parser.add_argument("--opponent", help="학습 상대: self | bot | mix | <학습 이름 또는 스냅샷 폴더>(그 모델 하나). "
                                            "이미 있는 학습에 주면 상대를 바꾼다(run.json 에 기록)")
+    parser.add_argument("--map", help="학습 맵: basic | complex | corridor | <Content/RL 의 아레나 BP 이름>. "
+                                      "이미 있는 학습에 주면 맵을 바꾼다(run.json 에 기록)")
+    parser.add_argument("--arenas", type=int, help="아레나 수(기본: 맵마다 — 기본 · 복잡 16, 복도 160)")
     parser.add_argument("ue_args", nargs="*", help="새 학습에만: 언리얼 추가 옵션(예: -SHApproach=1). '--' 뒤에 적는다")
     args = parser.parse_args()
 
@@ -1286,14 +1464,26 @@ def main() -> None:
             except ValueError as error:
                 raise SystemExit(str(error))
     config = load_config(args.name)
+    train_map = None
+    if args.map or args.arenas:
+        try:
+            base = args.map or (arena_name(map_of(config)) if config else DEFAULT_ARENA)
+            train_map = resolve_map(base, args.arenas)
+        except ValueError as error:
+            raise SystemExit(str(error))
     if config is None:
         try:
             initial = resolve_initial(args.initial) if args.initial else None
-            config = create_config(args.name, initial, args.note, args.ue_args, args.interval_minutes, opponent)
+            train_map = train_map or default_map()
+            opponent = scale_mix_for_map(opponent, train_map) if opponent else None
+            config = create_config(args.name, initial, args.note, args.ue_args, args.interval_minutes, opponent, train_map)
         except ValueError as error:
             raise SystemExit(str(error))
-    elif opponent is not None:
-        change_opponent(config, opponent)
+    else:
+        if train_map is not None:
+            change_map(config, train_map)
+        if opponent is not None:
+            change_opponent(config, scale_mix_for_map(opponent, map_of(config)))
 
     start_point = None
     if args.start_point and args.start_point != "latest":

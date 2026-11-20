@@ -89,6 +89,19 @@ public:
 protected:
 	virtual void BeginPlay() override;
 
+	/**
+	 *  명령줄 -SHArena=<이름 또는 경로> 가 있으면 GymsManager 의 모든 GymTemplates 를 그 아레나 클래스로 바꾼다.
+	 *  Start() 전에 불러야 한다. 맵(아레나) 선택은 이것 하나로 한다 — 레벨을 맵마다 복제하지 않는다
+	 *  (트레이너 · 디렉터 설정이 레벨마다 갈라지지 않게).
+	 *
+	 *  받는 형식: "BP_SHArena_Corridor"(= /Game/RL/ 아래), "/Game/RL/BP_SHArena_Corridor",
+	 *  "/Game/RL/BP_SHArena_Corridor.BP_SHArena_Corridor_C". 아레나 개수는 엔진의 -GymsCountOverride=N 으로 정한다.
+	 *
+	 *  ★ GymTemplates 는 엔진 클래스의 private UPROPERTY 라 C++ 로 직접 못 건드린다 — 리플렉션으로 쓴다.
+	 *  못 찾으면 Error 를 찍고 false — 레벨의 기본 아레나로 학습하는 일이 조용히 생기지 않게 학습기가 멈춘다.
+	 */
+	bool ApplyArenaOverride(const FString& Requested);
+
 	/** 아레나 개수 · 격자 간격 · 월드 원점 중복을 검사해 로그로 남긴다. */
 	void VerifyArenaLayout() const;
 

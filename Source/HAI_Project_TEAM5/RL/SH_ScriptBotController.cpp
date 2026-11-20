@@ -10,6 +10,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Gun.h"
 #include "LearningAgentsGym.h"
+#include "SH_Arena.h"
 #include "SH_VisionComponent.h"
 
 ASH_ScriptBotController::ASH_ScriptBotController()
@@ -210,8 +211,18 @@ void ASH_ScriptBotController::UpdateSearchBehavior(ABase_Character* Self, const 
 		{
 			return;   // 소속 아레나가 없으면 어디로 갈지 알 수 없다
 		}
-		const FVector Center = Gym->GetActorLocation();
-		Goal = Center + (Center - SelfLocation);
+		// ★ ㄱ자 아레나는 반대편이 벽 너머라 꺾이는 곳을 거쳐 간다 — ASH_Arena::GetAdvanceGoal.
+		//   다른 모양은 예전과 같은 대척점이다.
+		const ASH_Arena* Arena = Cast<ASH_Arena>(Gym);
+		if (Arena && Self->CombatStats)
+		{
+			Goal = Arena->GetAdvanceGoal(SelfLocation, static_cast<int32>(Self->CombatStats->TeamId));
+		}
+		else
+		{
+			const FVector Center = Gym->GetActorLocation();
+			Goal = Center + (Center - SelfLocation);
+		}
 	}
 
 	FVector ToGoal = Goal - SelfLocation;

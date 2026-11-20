@@ -27,6 +27,12 @@ struct FSHBoardGrid
 	 */
 	[[nodiscard]] static FSHBoardGrid Covering(double Radius, double InCellSize = DefaultCellSize);
 
+	/**
+	 *  중심이 (0,0)이고 반폭 (HalfX, HalfY) 인 직사각형을 다 덮는 격자 — 복도형 보드용.
+	 *  열·행 수를 각각 짝수로 맞춘다(Covering 과 같은 이유). 예: 반폭 2,200 x 550 → 18 x 6.
+	 */
+	[[nodiscard]] static FSHBoardGrid CoveringRect(double HalfX, double HalfY, double InCellSize = DefaultCellSize);
+
 	[[nodiscard]] bool IsInside(FIntPoint Cell) const;
 	[[nodiscard]] FVector2D CellCenter(FIntPoint Cell) const;
 

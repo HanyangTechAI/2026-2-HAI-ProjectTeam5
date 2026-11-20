@@ -4,16 +4,23 @@
 
 FSHBoardGrid FSHBoardGrid::Covering(const double Radius, const double InCellSize)
 {
+	return CoveringRect(Radius, Radius, InCellSize);
+}
+
+FSHBoardGrid FSHBoardGrid::CoveringRect(const double HalfX, const double HalfY, const double InCellSize)
+{
 	FSHBoardGrid Result;
 	Result.CellSize = FMath::Max(InCellSize, 1.0);
 
 	// 한쪽 절반에 필요한 칸 수를 올림한 뒤 두 배 → 항상 짝수.
-	const int32 HalfCount = FMath::Max(1, FMath::CeilToInt32(Radius / Result.CellSize));
-	Result.Columns = 2 * HalfCount;
-	Result.Rows    = 2 * HalfCount;
+	const int32 HalfColumns = FMath::Max(1, FMath::CeilToInt32(HalfX / Result.CellSize));
+	const int32 HalfRows    = FMath::Max(1, FMath::CeilToInt32(HalfY / Result.CellSize));
+	Result.Columns = 2 * HalfColumns;
+	Result.Rows    = 2 * HalfRows;
 
-	const double HalfExtent = static_cast<double>(HalfCount) * Result.CellSize;
-	Result.Origin = FVector2D(-HalfExtent, -HalfExtent);
+	Result.Origin = FVector2D(
+		-static_cast<double>(HalfColumns) * Result.CellSize,
+		-static_cast<double>(HalfRows) * Result.CellSize);
 	return Result;
 }
 

@@ -70,6 +70,32 @@ bool FSHBoardGridCoveringTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSHBoardGridCoveringRectTest, "TEAM5.Board.GridCoveringRect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FSHBoardGridCoveringRectTest::RunTest(const FString& Parameters)
+{
+	// 정사각형이면 Covering 과 같다 — 기존 보드의 격자가 바뀌지 않는다.
+	const FSHBoardGrid Square = FSHBoardGrid::CoveringRect(1750.0, 1750.0);
+	const FSHBoardGrid Circle = FSHBoardGrid::Covering(1750.0);
+	TestEqual(TEXT("정사각형: 열"), Square.Columns, Circle.Columns);
+	TestEqual(TEXT("정사각형: 행"), Square.Rows, Circle.Rows);
+	TestTrue(TEXT("정사각형: 원점"), Square.Origin.Equals(Circle.Origin));
+
+	// 복도 반폭 2,200 x 550: X 2200/250 = 8.8 → 한쪽 9칸 → 18열, Y 550/250 = 2.2 → 한쪽 3칸 → 6행.
+	const FSHBoardGrid Corridor = FSHBoardGrid::CoveringRect(2200.0, 550.0);
+	TestEqual(TEXT("복도: 열"), Corridor.Columns, 18);
+	TestEqual(TEXT("복도: 행"), Corridor.Rows, 6);
+	TestTrue(TEXT("복도: 원점"), Corridor.Origin.Equals(FVector2D(-2250.0, -750.0)));
+
+	// 가운데 선 대칭: 열 8 · 9 의 중심이 ±125, 행 2 · 3 의 중심이 ±125.
+	TestEqual(TEXT("복도: 가운데 서쪽 칸"), Corridor.CellCenter(FIntPoint(8, 2)).X, -125.0);
+	TestEqual(TEXT("복도: 가운데 동쪽 칸"), Corridor.CellCenter(FIntPoint(9, 3)).X, 125.0);
+	TestEqual(TEXT("복도: 가운데 남쪽 칸"), Corridor.CellCenter(FIntPoint(8, 2)).Y, -125.0);
+	TestEqual(TEXT("복도: 가운데 북쪽 칸"), Corridor.CellCenter(FIntPoint(9, 3)).Y, 125.0);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSHPlacementEmptyTest, "TEAM5.Board.PlacementEmpty",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
 

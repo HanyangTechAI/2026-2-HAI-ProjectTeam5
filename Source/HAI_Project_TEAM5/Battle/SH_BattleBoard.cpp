@@ -57,8 +57,20 @@ void ASH_BattleBoard::BeginPlay()
 		return;
 	}
 
-	// 격자는 아레나 크기를 따른다. 반경 1,750 → 14 x 14, 2,450 → 20 x 20.
-	Grid = FSHBoardGrid::Covering(ArenaRadius);
+	// 격자는 아레나 크기를 따른다. 반경 1,750 → 14 x 14, 2,450 → 20 x 20, 직사각형 반폭 2,200 x 550 → 18 x 6.
+	// ㄱ자는 중심(꺾이는 곳)에서 다리 길이만큼 −X · −Y 로 뻗으므로 ±LegLength 정사각형으로 덮는다(다리 밖 칸은 막힌 칸).
+	if (BoundaryShape == ESHArenaShape::Rectangle)
+	{
+		Grid = FSHBoardGrid::CoveringRect(RectHalfExtents.X, RectHalfExtents.Y);
+	}
+	else if (BoundaryShape == ESHArenaShape::LShape)
+	{
+		Grid = FSHBoardGrid::Covering(LegLength);
+	}
+	else
+	{
+		Grid = FSHBoardGrid::Covering(ArenaRadius);
+	}
 
 	// ★ 순서: 막힌 칸을 유닛보다 먼저 계산한다. 유닛 캡슐도 WorldStatic 채널을 막아서
 	//   나중에 계산하면 유닛이 선 칸이 "막힘" 이 된다.
@@ -117,14 +129,13 @@ void ASH_BattleBoard::RebuildBlockedCells()
 	//   바닥은 캡슐이 4 cm 위에 떠 있어서(중심 100, 반높이 96) 걸리지 않는다.
 	const FCollisionQueryParams Query(SCENE_QUERY_STAT(SHBoardCell), /*bTraceComplex=*/false);
 
-	const double SafeRadius = ArenaRadius - ClampMargin;
-
 	for (int32 Y = 0; Y < Grid.Rows; ++Y)
 	{
 		for (int32 X = 0; X < Grid.Columns; ++X)
 		{
 			const FIntPoint Cell(X, Y);
-			const bool bOutside = Grid.CellCenter(Cell).Size() > SafeRadius;
+			// 원판(팔각형) 또는 직사각형(복도) 밖 칸. 복도 벽 너머 칸은 겹치는 물체가 없어서 아래 겹침 검사로는 안 걸린다.
+			const bool bOutside = !IsInsidePlayArea(Grid.CellCenter(Cell), ClampMargin);
 			const bool bHitsObstacle = !bOutside && World->OverlapAnyTestByChannel(
 				CellTransform(Cell, 0).GetLocation(), FQuat::Identity, ECC_WorldStatic, Capsule, Query);
 			BlockedCells[FSHBoardGrid::ToIndex(X, Y, Grid.Columns)] = bOutside || bHitsObstacle;
@@ -575,7 +586,6 @@ void ASH_BattleBoard::DrawPlacementGrid() const
 		return;
 	}
 
-	const double SafeRadius = ArenaRadius - ClampMargin;
 	const double HalfCell = Grid.CellSize * 0.5 - 8.0;
 	const FVector Extent(HalfCell, HalfCell, 2.0);
 	const FVector Center = GetActorLocation();
@@ -590,7 +600,7 @@ void ASH_BattleBoard::DrawPlacementGrid() const
 				continue;
 			}
 			const FVector2D Local = Grid.CellCenter(Cell);
-			if (Local.Size() > SafeRadius)
+			if (!IsInsidePlayArea(Local, ClampMargin))
 			{
 				continue;   // 아레나 밖 칸은 그리지 않는다
 			}

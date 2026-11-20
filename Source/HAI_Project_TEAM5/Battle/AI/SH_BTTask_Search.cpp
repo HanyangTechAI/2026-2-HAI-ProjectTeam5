@@ -3,6 +3,7 @@
 #include "Battle/AI/SH_BTTask_Search.h"
 
 #include "Battle/AI/SH_BotSteering.h"
+#include "Combat/CombatStatsComponent.h"
 #include "RL/SH_Arena.h"
 #include "RL/SH_RLCharacter.h"
 
@@ -75,9 +76,12 @@ EBTNodeResult::Type USH_BTTask_Search::Decide(UBehaviorTreeComponent& /*OwnerCom
 		{
 			const FVector Center = Arena->GetActorLocation();
 			const FVector FromCenter = Unit.GetActorLocation() - Center;
-			// 대척점. 중심 근처면 대척점이 의미가 없으니 지금 보는 쪽으로 간다.
-			const FVector Goal = FromCenter.Size2D() > 200.0
-				? Center - FromCenter
+			const int32 Team = Unit.CombatStats ? static_cast<int32>(Unit.CombatStats->TeamId) : 0;
+			// 대척점(ㄱ자는 꺾이는 곳 → 적 다리 끝, ASH_Arena::GetAdvanceGoal). 팔각형 · 일자 복도는 중심 근처면
+			// 대척점이 의미가 없으니 지금 보는 쪽으로 간다. ㄱ자는 중심에서도 목표(적 다리 끝)가 분명하다.
+			const bool bLShape = Arena->BoundaryShape == ESHArenaShape::LShape;
+			const FVector Goal = (bLShape || FromCenter.Size2D() > 200.0)
+				? Arena->GetAdvanceGoal(Unit.GetActorLocation(), Team)
 				: Unit.GetActorLocation() + Unit.GetActorForwardVector() * 500.0;
 			Move = SHBot::FlatDirectionTo(Unit, Goal);
 		}
