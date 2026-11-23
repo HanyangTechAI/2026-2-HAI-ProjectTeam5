@@ -1,0 +1,25 @@
+{
+  "name": "1123_START",
+  "created_at": "2026-11-23 17:42:04",
+  "git_commit": "23a0da0df2162adcc5c2e50f27abac64c7562f27",
+  "ue_args": [
+    "-SHRoundRules=1",
+    "-SHOutcome=0",
+    "-SHReportInterval=60"
+  ],
+  "interval_minutes": 60.0,
+  "initial_snapshot": "Training/START_1120_corridor/cum026h06m",
+  "map": {
+    "arena": "BP_SHArena_Complex",
+    "arenas": 16
+  },
+  "opponent": {
+    "kind": "bt"
+  },
+  "aim": {
+    "assist": 0.0,
+    "align": 0.0,
+    "see": 0.0
+  },
+  "note": "조준보상해제"
+}
