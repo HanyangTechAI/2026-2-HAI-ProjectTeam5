@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "completed_runs": 6,
+  "completed_rounds": 60,
+  "unchanged_input_files": 18,
+  "arena": "BP_SHArena_Corridor",
+  "fixed_opponent": "Training/START_11_13/cum017h06m",
+  "seeds": [
+    1234,
+    2345,
+    3456
+  ],
+  "runpod_used": false
+}

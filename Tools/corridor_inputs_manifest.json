@@ -1,0 +1,114 @@
+{
+  "repository": "HanyangTechAI/2026-2-HAI-ProjectTeam5",
+  "commit": "23a0da0df2162adcc5c2e50f27abac64c7562f27",
+  "files": [
+    {
+      "path": "Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_critic.bin",
+      "sha": "a7ab7c8f645d7be706703c15da49ea9da89772c1",
+      "size": 197912,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_critic.bin"
+    },
+    {
+      "path": "Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_decoder.bin",
+      "sha": "8cab9796fd372c85ad1c0edb30e357d9f055b074",
+      "size": 564,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_decoder.bin"
+    },
+    {
+      "path": "Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_encoder.bin",
+      "sha": "116d48bc9c235be12d72e0042eda1a82de92dbcd",
+      "size": 13340,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_encoder.bin"
+    },
+    {
+      "path": "Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_experiment.json",
+      "sha": "ef797029f27545cbb947645debb12eaf6d1136b9",
+      "size": 12292,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_experiment.json"
+    },
+    {
+      "path": "Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_meta.txt",
+      "sha": "856c7c225558f173a6f74b5d68a48c3eb135f2ac",
+      "size": 580,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_meta.txt"
+    },
+    {
+      "path": "Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_policy.bin",
+      "sha": "987c1b6e888655ac45fc66757bef0845ed255f98",
+      "size": 568408,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1116_NEW_OPPONENT/cum020h06m/cum020h06m_policy.bin"
+    },
+    {
+      "path": "Training/START_1120_corridor/cum026h06m/cum026h06m_critic.bin",
+      "sha": "967c15e25ce98944911282a379f4bb2aeada4a17",
+      "size": 197912,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1120_corridor/cum026h06m/cum026h06m_critic.bin"
+    },
+    {
+      "path": "Training/START_1120_corridor/cum026h06m/cum026h06m_decoder.bin",
+      "sha": "a8940732d10460e6c47075f14884f77301953a6c",
+      "size": 564,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1120_corridor/cum026h06m/cum026h06m_decoder.bin"
+    },
+    {
+      "path": "Training/START_1120_corridor/cum026h06m/cum026h06m_encoder.bin",
+      "sha": "8da7884fb690b4dba3933b48f64e7e71a9f040f4",
+      "size": 13340,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1120_corridor/cum026h06m/cum026h06m_encoder.bin"
+    },
+    {
+      "path": "Training/START_1120_corridor/cum026h06m/cum026h06m_experiment.json",
+      "sha": "0782c430e131b09e436f78331002e7cae1df7210",
+      "size": 12620,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1120_corridor/cum026h06m/cum026h06m_experiment.json"
+    },
+    {
+      "path": "Training/START_1120_corridor/cum026h06m/cum026h06m_meta.txt",
+      "sha": "e617a20b7493e61eb5c0e8418436117f88c5e54e",
+      "size": 592,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1120_corridor/cum026h06m/cum026h06m_meta.txt"
+    },
+    {
+      "path": "Training/START_1120_corridor/cum026h06m/cum026h06m_policy.bin",
+      "sha": "15a18f712a75cc2e31e0ddffa2c29b9e3b355c60",
+      "size": 568408,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_1120_corridor/cum026h06m/cum026h06m_policy.bin"
+    },
+    {
+      "path": "Training/START_11_13/cum017h06m/cum017h06m_critic.bin",
+      "sha": "4cb59477efc9098a641ae92b930c7199cf401b5d",
+      "size": 197912,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_11_13/cum017h06m/cum017h06m_critic.bin"
+    },
+    {
+      "path": "Training/START_11_13/cum017h06m/cum017h06m_decoder.bin",
+      "sha": "564c19f3bc5a581f37a9526b344d9b73960fde17",
+      "size": 564,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_11_13/cum017h06m/cum017h06m_decoder.bin"
+    },
+    {
+      "path": "Training/START_11_13/cum017h06m/cum017h06m_encoder.bin",
+      "sha": "07dad966580a623f6a0e7510df773ab1269a3137",
+      "size": 13340,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_11_13/cum017h06m/cum017h06m_encoder.bin"
+    },
+    {
+      "path": "Training/START_11_13/cum017h06m/cum017h06m_experiment.json",
+      "sha": "ed74c551fab5838e8dab8c714d499a8fb7692f1d",
+      "size": 12211,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_11_13/cum017h06m/cum017h06m_experiment.json"
+    },
+    {
+      "path": "Training/START_11_13/cum017h06m/cum017h06m_meta.txt",
+      "sha": "21826893c67b6bc4906d06ad12b4abbe821a985f",
+      "size": 580,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_11_13/cum017h06m/cum017h06m_meta.txt"
+    },
+    {
+      "path": "Training/START_11_13/cum017h06m/cum017h06m_policy.bin",
+      "sha": "1e430a418137e6fd18ceebe373d3dbf88c7fefba",
+      "size": 568408,
+      "url": "https://raw.githubusercontent.com/HanyangTechAI/2026-2-HAI-ProjectTeam5/23a0da0df2162adcc5c2e50f27abac64c7562f27/Training/START_11_13/cum017h06m/cum017h06m_policy.bin"
+    }
+  ]
+}
