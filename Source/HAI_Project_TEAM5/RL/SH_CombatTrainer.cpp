@@ -25,6 +25,9 @@
 #include "SH_ShooterTrainingEnv.h"
 #include "SH_SnapshotFiles.h"
 #include "SH_VisionComponent.h"
+#include "Battle/AI/SH_BTBotController.h"
+#include "BehaviorTree/BehaviorTree.h"
+#include "BrainComponent.h"
 
 namespace
 {
@@ -97,6 +100,8 @@ ASH_CombatTrainer::ASH_CombatTrainer()
 	PrimaryActorTick.bStartWithTickEnabled = true;
 
 	Manager = CreateDefaultSubobject<ULearningAgentsManager>(TEXT("LearningAgentsManager"));
+
+	BotBehaviorTree = TSoftObjectPtr<UBehaviorTree>(FSoftObjectPath(TEXT("/Game/Battle/AI/BT_SHCombat.BT_SHCombat")));
 
 	// 상대 정책(과거 스냅샷) 전용 매니저. 상대 혼합을 안 쓰면 에이전트 0개로 남는다.
 	OpponentManager = CreateDefaultSubobject<ULearningAgentsManager>(TEXT("OpponentManager"));
@@ -312,6 +317,7 @@ void ASH_CombatTrainer::BeginPlay()
 		{
 			bEvalRealtime = bEvalRealtimeOnPlay;
 		}
+		bEvalVsBehaviorTree = bEvalOpponentBehaviorTree;
 		if (EvalOpponentDir.IsEmpty() && !EvalOpponentDirectory.Path.IsEmpty())
 		{
 			EvalOpponentDir = EvalOpponentDirectory.Path;
@@ -363,9 +369,54 @@ void ASH_CombatTrainer::BeginPlay()
 		bOpponentPoolOnly = (OverridePoolOnly == 1);
 	}
 	FPaths::NormalizeDirectoryName(OpponentPoolDir);   // 끝의 '/' 가 있으면 폴더 이름(파일 접두어)을 못 읽는다
-	if (FParse::Value(FCommandLine::Get(), TEXT("SHEvalOpponent="), EvalOpponentDir) && !EvalOpponentDir.IsEmpty())
+	FString BotKind;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHBotKind="), BotKind))
 	{
+		if (BotKind == TEXT("bt") || BotKind == TEXT("script"))
+		{
+			bBehaviorTreeBots = (BotKind == TEXT("bt"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[SH_CombatTrainer] -SHBotKind=%s — bt 또는 script 만 받는다. 기본값을 쓴다."), *BotKind);
+		}
+	}
+	FString BotTreePath;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHBotTree="), BotTreePath) && !BotTreePath.IsEmpty())
+	{
+		BotBehaviorTree = TSoftObjectPtr<UBehaviorTree>(FSoftObjectPath(BotTreePath));
+	}
+	FString EvalOpponentText;
+	if (FParse::Value(FCommandLine::Get(), TEXT("SHEvalOpponent="), EvalOpponentText) && !EvalOpponentText.IsEmpty())
+	{
+		// 명령줄이 레벨 설정보다 우선한다. "bt" 는 행동 트리, 그 밖은 스냅샷 폴더.
+		bEvalVsBehaviorTree = EvalOpponentText.Equals(TEXT("bt"), ESearchCase::IgnoreCase);
+		EvalOpponentDir = bEvalVsBehaviorTree ? FString() : EvalOpponentText;
 		FPaths::NormalizeDirectoryName(EvalOpponentDir);
+	}
+	else if (bBehaviorTreeBots && EvalOpponentDir.IsEmpty() && !bOpponentMix)
+	{
+		bEvalVsBehaviorTree = true;   // -SHEval=… -SHBotKind=bt 도 같은 뜻으로 받는다
+	}
+
+	if (!bEvalMode)
+	{
+		bEvalVsBehaviorTree = false;
+	}
+	else if (bEvalVsBehaviorTree)
+	{
+		// ★ self-play · 혼합이 켜져 있으면 봇 아레나가 생기지 않아 행동 트리가 조용히 빠진다
+		//   (Lvl_SHView 의 트레이너 액터는 bSelfPlay 가 켜진 채 저장돼 있다). 평가 상대가 행동 트리면 모두 끈다.
+		if (bSelfPlay || bOpponentMix || !EvalOpponentDir.IsEmpty())
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[SH_CombatTrainer] 평가 상대가 행동 트리라 self-play(%d) · 상대 혼합(%d) · 상대 스냅샷('%s') 설정을 쓰지 않는다."),
+				bSelfPlay ? 1 : 0, bOpponentMix ? 1 : 0, *EvalOpponentDir);
+		}
+		bBehaviorTreeBots = true;
+		bSelfPlay = false;
+		bOpponentMix = false;
+		EvalOpponentDir.Empty();
 	}
 	MixRandom.Initialize(Seed);
 	LastOpponentSwapRealTime = StartRealTime;
@@ -410,6 +461,12 @@ void ASH_CombatTrainer::CollectAgentUnits(TArray<ASH_RLCharacter*>& OutUnits, TA
 
 		// ★ 판별 기준은 팀이 아니라 컨트롤러다. 커리큘럼을 BP 설정만으로 바꿀 수 있다.
 		if (!Cast<ASH_RLBotController>(Unit->GetController()))
+		{
+			continue;
+		}
+		// ★ 행동 트리 컨트롤러도 ASH_RLBotController 를 상속하지만 정책이 조종하지 않는다 — 학습 에이전트도,
+		//   상대 정책(OpponentManager)의 에이전트도 아니다. 빼지 않으면 상대 정책이 트리와 같은 유닛을 동시에 움직인다.
+		if (Cast<ASH_BTBotController>(Unit->GetController()))
 		{
 			continue;
 		}
@@ -474,8 +531,9 @@ void ASH_CombatTrainer::AssignArenaRoles()
 	}
 
 	UE_LOG(LogTemp, Display,
-		TEXT("[SH_CombatTrainer] 아레나 역할 — self-play %d / 스냅샷 상대 %d / 스크립트 봇 %d%s"),
-		Counts[0], Counts[1], Counts[2], bOpponentMix ? TEXT(" (상대 혼합)") : TEXT(""));
+		TEXT("[SH_CombatTrainer] 아레나 역할 — self-play %d / 스냅샷 상대 %d / %s %d%s"),
+		Counts[0], Counts[1], bBehaviorTreeBots ? TEXT("행동 트리 봇") : TEXT("스크립트 봇"), Counts[2],
+		bOpponentMix ? TEXT(" (상대 혼합)") : TEXT(""));
 }
 
 ESHArenaRole ASH_CombatTrainer::GetArenaRole(const ASH_Arena* Arena) const
@@ -604,6 +662,20 @@ void ASH_CombatTrainer::Assemble()
 		}
 		UE_LOG(LogTemp, Display,
 			TEXT("[SH_CombatTrainer] 팀 1 유닛 %d개의 컨트롤러를 SH_RLBotController 로 교체했다."), Swapped);
+	}
+
+	// --- 0a'. 봇 아레나: 스크립트 봇 대신 행동 트리 ------------------------------
+	if (bBehaviorTreeBots && !SwapBotsToBehaviorTree())
+	{
+		// 다른 상대로 몇 시간 학습하는 것보다 바로 멈추는 편이 낫다. ★ 문구 "를 적용하지 못해 종료한다" 는
+		// Training/train.py 가 찾는다(ARENA_FAILURE_TEXT) — 바꾸면 거기도 바꿀 것.
+		UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 행동 트리 상대(-SHBotKind=bt / -SHEvalOpponent=bt)를 적용하지 못해 종료한다."));
+		bAssembleAttempted = true;
+		if (!GIsEditor)
+		{
+			FPlatformMisc::RequestExit(false);
+		}
+		return;
 	}
 
 	// 게더당 기록 스텝. self-play 는 에이전트가 두 배라 버퍼도 키운다.
@@ -905,8 +977,9 @@ void ASH_CombatTrainer::Assemble()
 		if (const ASH_Arena* First = Arenas.Num() > 0 ? Arenas[0].Get() : nullptr)
 		{
 			RunLogHeader.ReplaceInline(TEXT("- 보상:"), *FString::Printf(
-				TEXT("- 맵: `%s` x %d, %d 대 %d\n- 보상:"),
-				*First->GetClass()->GetName(), Arenas.Num(), First->GetTeamSize(0), First->GetTeamSize(1)));
+				TEXT("- 맵: `%s` x %d, %d 대 %d, 봇 아레나 상대 = %s\n- 보상:"),
+				*First->GetClass()->GetName(), Arenas.Num(), First->GetTeamSize(0), First->GetTeamSize(1),
+				LoadedBotTree ? *FString::Printf(TEXT("행동 트리 `%s`"), *LoadedBotTree->GetName()) : TEXT("스크립트 봇")));
 		}
 		AppendDailyLog(FString());
 	}
@@ -944,8 +1017,7 @@ void ASH_CombatTrainer::Assemble()
 		UE_LOG(LogTemp, Display,
 			TEXT("[SH_CombatTrainer] 평가 조립 완료 — 에이전트 %d, 아레나 %d, 상대 = %s."),
 			Agents.Num(), ArenaAgentIds.Num(),
-			bHasOpponents ? *FString::Printf(TEXT("스냅샷 '%s'"), *CurrentOpponentName)
-				: (bSelfPlay ? TEXT("같은 정책") : TEXT("팀 1 기본 컨트롤러(스크립트 봇)")));
+			*DescribeOpponent());
 		return;
 	}
 
@@ -1444,6 +1516,104 @@ void ASH_CombatTrainer::CollectRounds()
 	}
 }
 
+bool ASH_CombatTrainer::SwapBotsToBehaviorTree()
+{
+	LoadedBotTree = BotBehaviorTree.LoadSynchronous();
+	if (!LoadedBotTree || !LoadedBotTree->BlackboardAsset)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] 행동 트리 봇: '%s' 를 불러오지 못했거나 블랙보드가 없다."),
+			*BotBehaviorTree.ToString());
+		LoadedBotTree = nullptr;
+		return false;
+	}
+
+	int32 Swapped = 0;
+	int32 Failed = 0;
+	for (TActorIterator<ASH_RLCharacter> It(GetWorld()); It; ++It)
+	{
+		ASH_RLCharacter* Unit = *It;
+		const ASH_Arena* Arena = Unit ? Cast<ASH_Arena>(Unit->CachedGym.Get()) : nullptr;
+		const int32 Team = (Unit && Unit->CombatStats) ? static_cast<int32>(Unit->CombatStats->TeamId) : 0;
+		if (!Arena || Team != 1 || GetArenaRole(Arena) != ESHArenaRole::Bot)
+		{
+			continue;   // 봇 아레나의 팀 1 만
+		}
+
+		ASH_BTBotController* BTController = Cast<ASH_BTBotController>(Unit->GetController());
+		if (!BTController)
+		{
+			if (AController* OldController = Unit->GetController())
+			{
+				OldController->UnPossess();
+				OldController->Destroy();
+			}
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			BTController = GetWorld()->SpawnActor<ASH_BTBotController>(
+				ASH_BTBotController::StaticClass(), Unit->GetActorTransform(), SpawnParams);
+			if (!BTController)
+			{
+				++Failed;
+				continue;
+			}
+			BTController->Possess(Unit);
+		}
+		if (BTController->StartCombat(LoadedBotTree))
+		{
+			++Swapped;
+		}
+		else
+		{
+			++Failed;
+		}
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[SH_CombatTrainer] 봇 아레나 팀 1 유닛 %d개를 행동 트리 %s 로 바꿨다%s."),
+		Swapped, *LoadedBotTree->GetName(), Failed > 0 ? *FString::Printf(TEXT(" (실패 %d)"), Failed) : TEXT(""));
+	if (Swapped == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SH_CombatTrainer] 행동 트리로 바꿀 봇 아레나 유닛이 없다 — 행동 트리 상대가 쓰이지 않는다."));
+		// 평가는 상대가 바뀌면 결과의 뜻이 달라진다 — 실패로 친다. 학습(혼합에서 봇 0개)은 알리기만 한다.
+		return Failed == 0 && !bEvalVsBehaviorTree;
+	}
+	return Failed == 0;
+}
+
+FString ASH_CombatTrainer::DescribeOpponent() const
+{
+	if (bHasOpponents)
+	{
+		return FString::Printf(TEXT("스냅샷 '%s'"), *CurrentOpponentName);
+	}
+	if (bSelfPlay)
+	{
+		return TEXT("같은 정책");
+	}
+	return LoadedBotTree ? FString::Printf(TEXT("행동 트리 '%s'"), *LoadedBotTree->GetName()) : FString(TEXT("스크립트 봇"));
+}
+
+void ASH_CombatTrainer::RestartBehaviorTreeBots(const ASH_Arena& Arena) const
+{
+	for (const TWeakObjectPtr<ABase_Character>& Weak : Arena.GetTeamUnits(1))
+	{
+		const ABase_Character* Unit = Weak.Get();
+		if (ASH_BTBotController* Controller = Unit ? Cast<ASH_BTBotController>(Unit->GetController()) : nullptr)
+		{
+			Controller->StopCombat();
+			const bool bStarted = Controller->StartCombat(LoadedBotTree);
+
+			// ★ 엔진(StartTree)은 이전 실행이 아직 안 끝났으면 시작 요청을 조용히 건너뛴다. 그러면 트리가 멈춘 채
+			//   서 있는 봇과 싸우게 되므로 실제로 도는지 확인한다.
+			const UBrainComponent* Brain = Controller->GetBrainComponent();
+			if (!bStarted || !Brain || !Brain->IsRunning())
+			{
+				UE_LOG(LogTemp, Error, TEXT("[SH_CombatTrainer] %s: 새 라운드에서 행동 트리가 다시 시작되지 않았다."),
+					*GetNameSafe(Unit));
+			}
+		}
+	}
+}
+
 void ASH_CombatTrainer::TickOpponents(const double RealNow)
 {
 	CollectRounds();
@@ -1467,6 +1637,10 @@ void ASH_CombatTrainer::TickOpponents(const double RealNow)
 			{
 				ResetIds.Append(*Ids);
 			}
+		}
+		else if (ArenaRole == ESHArenaRole::Bot && LoadedBotTree)
+		{
+			RestartBehaviorTreeBots(*Arena);
 		}
 		else if (ArenaRole == ESHArenaRole::Bot && bOpponentMix)
 		{
@@ -1571,8 +1745,7 @@ void ASH_CombatTrainer::LogEvaluationSummary() const
 		TEXT("팀0 승률 %.1f%% (95%% 구간 %.1f ~ %.1f%%) | 행동 잡음 x%.2f | 상대 %s"),
 		N, TotalWins[0], TotalWins[1], TotalTimeouts, TotalMutual,
 		100.0 * P, 100.0 * Low, 100.0 * High, EvalActionNoise,
-		bHasOpponents ? *FString::Printf(TEXT("스냅샷 '%s'"), *CurrentOpponentName)
-			: (bSelfPlay ? TEXT("같은 정책") : TEXT("스크립트 봇")));
+		*DescribeOpponent());
 }
 
 double ASH_CombatTrainer::GetCumulativeSeconds() const

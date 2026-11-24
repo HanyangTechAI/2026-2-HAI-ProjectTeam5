@@ -43,14 +43,21 @@ DEFAULT_UE_ARGS = ["-SHRoundRules=1", "-SHOutcome=0", "-SHReportInterval=60"]
 
 # 학습 상대를 정하는 옵션. run.json 의 "opponent" 로만 정한다(ue_args 에 남은 옛 값은 실행할 때 걸러 낸다).
 OPPONENT_PREFIXES = ("-SHSelfPlay=", "-SHOpponentMix=", "-SHMixSnapshot=", "-SHMixBot=", "-SHOpponentPool=",
-                     "-SHOpponentPoolOnly=", "-SHOpponentSwap=")
+                     "-SHOpponentPoolOnly=", "-SHOpponentSwap=", "-SHBotKind=", "-SHBotTree=")
+
+# 조준 · 명중 관련 실험 스위치(ASH_CombatTrainer 의 AimExperiment). run.json 의 "aim" 으로만 정한다(aim_args).
+AIM_PREFIXES = ("-SHAimAssist=", "-SHAimAssistStrength=", "-SHAimReward=", "-SHAimRewardScale=",
+                "-SHSeeReward=", "-SHSeeRewardScale=")
 
 # 이 실행기가 직접 정하는 옵션. run.json 의 추가 옵션으로 덮어쓰면 실행기가 망가지므로 막는다.
 # 학습 맵(아레나)을 정하는 옵션. run.json 의 "map" 으로만 정한다(map_args).
 MAP_PREFIXES = ("-SHArena=", "-GymsCountOverride")
 
 RESERVED_PREFIXES = MAP_PREFIXES + ("-SHSnapshotRoot=", "-SHSnapshotFlat=", "-SHSnapshotInterval=", "-SHResume=",
-                     "-SHTrainSeconds=", "-SHEval=", "-abslog=") + OPPONENT_PREFIXES
+                     "-SHTrainSeconds=", "-SHEval=", "-abslog=") + OPPONENT_PREFIXES + AIM_PREFIXES
+
+# 실행기가 run.json 에서 다시 만드는 옵션 묶음 — ue_args 에 옛 값이 남아 있으면 실행할 때 걸러 낸다.
+MANAGED_PREFIXES = OPPONENT_PREFIXES + MAP_PREFIXES + AIM_PREFIXES
 
 SNAPSHOT_DIR_RE = re.compile(r"^cum(\d{3})h(\d{2})m(?:_\d+)?$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
@@ -450,9 +457,10 @@ def build_command(ue_cmd: Path, run_dir: Path, config: dict, resume: Path | None
                f"-SHSnapshotRoot={run_dir.as_posix()}", "-SHSnapshotFlat=1", f"-SHSnapshotInterval={interval}"]
     # 옛 run.json 의 ue_args 에 남은 상대 옵션(-SHSelfPlay=1 등)은 빼고, "opponent" 에서 다시 만든다.
     # ★ 같은 옵션이 두 번 있으면 언리얼(FParse::Value)은 앞의 것을 쓴다 — 섞이면 고른 상대가 무시된다.
-    command += [a for a in config["ue_args"] if not a.startswith(OPPONENT_PREFIXES + MAP_PREFIXES)]
+    command += [a for a in config["ue_args"] if not a.startswith(MANAGED_PREFIXES)]
     command += map_args(map_of(config))
     command += opponent_args(opponent_of(config))
+    command += aim_args(aim_of(config))
     if resume is not None:
         command.append(f"-SHResume={resume.as_posix()}")
     # ★ 항상 넘긴다. 0 = 제한 없음. 넘기지 않으면 레벨(Lvl_SHTrain)의 트레이너 액터에 남은 값(예: 시험용 300초)이 적용된다.
@@ -542,10 +550,12 @@ def train(name: str, config: dict, git_mode: str, session_hours: float | None, s
             say(f"언리얼 종료(코드 {process.returncode}, {hours_minutes(ran)} 동안 실행).")
             wait_and_publish(run_dir, git_mode)
 
-            # 맵(-SHArena)을 못 찾아 디렉터가 스스로 끝낸 경우 — 다시 시작해도 같다. 종료 코드는 엔진이 0 으로 덮어써서 로그로 본다.
+            # 맵(-SHArena) · 행동 트리 상대(-SHBotKind=bt)를 적용하지 못해 언리얼이 스스로 끝낸 경우 — 다시 시작해도 같다.
+            # 종료 코드는 엔진이 0 으로 덮어써서 로그 문구로 본다.
             if log_path.exists() and ARENA_FAILURE_TEXT in log_path.read_text(encoding="utf-8", errors="replace"):
-                say(f"언리얼이 학습 맵 {arena_name(map_of(config))} 을(를) 불러오지 못했다 — 멈춘다. "
-                    f"빌드가 최신인지(-SHArena 는 2026-11-20 빌드부터), 맵 BP 가 Content/RL 에 있는지 확인할 것.")
+                say(f"언리얼이 학습 설정을 적용하지 못했다 — 멈춘다. 맵 {arena_name(map_of(config))}, "
+                    f"상대 {describe_opponent(opponent_of(config))}. 위 언리얼 로그의 Error 줄을 볼 것 "
+                    f"(빌드가 최신인지 — -SHArena 는 2026-11-20, -SHBotKind 는 2026-11-22 빌드부터).")
                 break
 
             if session_end is not None and time.time() >= session_end - 60:
@@ -600,7 +610,7 @@ def save_config(config: dict) -> None:
 
 
 def create_config(name: str, initial: str | None, note: str, extra_args: list[str], interval_minutes: float,
-                  opponent: dict | None = None, train_map: dict | None = None) -> dict:
+                  opponent: dict | None = None, train_map: dict | None = None, aim: dict | None = None) -> dict:
     bad = [a for a in extra_args if a.startswith(RESERVED_PREFIXES)]
     if bad:
         raise ValueError(f"이 옵션은 실행기가 정한다: {' '.join(bad)}")
@@ -613,6 +623,7 @@ def create_config(name: str, initial: str | None, note: str, extra_args: list[st
         "initial_snapshot": initial,
         "map": train_map or default_map(),
         "opponent": opponent or {"kind": "self"},
+        "aim": aim or dict(DEFAULT_AIM),
         "note": note,
     }
     save_config(config)
@@ -630,7 +641,7 @@ def create_config(name: str, initial: str | None, note: str, extra_args: list[st
 #   arenas None = 레벨의 기본 개수(16).
 
 ARENA_DIR = ROOT / "Content" / "RL"
-ARENA_FAILURE_TEXT = "를 적용하지 못해 종료한다"   # ASH_RLDirector::BeginPlay 의 로그 문구
+ARENA_FAILURE_TEXT = "를 적용하지 못해 종료한다"   # ASH_RLDirector::BeginPlay · ASH_CombatTrainer::Assemble 의 로그 문구
 DEFAULT_ARENA = "BP_SHArena"
 DEFAULT_ARENA_COUNT = 16
 
@@ -730,10 +741,14 @@ def scale_mix_for_map(opponent: dict, train_map: dict) -> dict:
 # run.json 의 "opponent":
 #   {"kind": "self"}                                   같은 정책끼리(self-play) — 기본
 #   {"kind": "bot"}                                    스크립트 봇
+#   {"kind": "bt"}                                     행동 트리(BT_SHCombat — 인게임 "행동 트리" 팀과 같은 트리)
 #   {"kind": "model", "snapshot": "<스냅샷 폴더>"}       고른 모델 하나와만(모든 아레나)
-#   {"kind": "mix", "snapshot_arenas": 6, "bot_arenas": 2, "pool": "<폴더>" | null}
+#   {"kind": "mix", "snapshot_arenas": 6, "bot_arenas": 2, "pool": "<폴더>" | null, "bot_kind": "script" | "bt"}
 #                                                      아레나를 self-play / 과거 스냅샷 / 봇으로 나눈다.
 #                                                      스냅샷 상대는 이 학습의 스냅샷(+ pool)에서 10분마다 바꾼다.
+#                                                      봇 아레나는 bot_kind 로 스크립트 봇 또는 행동 트리.
+
+BT_ASSET = ROOT / "Content" / "Battle" / "AI" / "BT_SHCombat.uasset"
 
 def opponent_of(config: dict) -> dict:
     """run.json 의 학습 상대. "opponent" 가 없는 옛 run.json 은 ue_args 에서 추정한다."""
@@ -741,7 +756,7 @@ def opponent_of(config: dict) -> dict:
         return config["opponent"]
     args = config.get("ue_args", [])
     if "-SHSelfPlay=0" in args:
-        return {"kind": "bot"}
+        return {"kind": "bt" if "-SHBotKind=bt" in args else "bot"}
     if "-SHOpponentMix=1" in args:
         pool = next((a.split("=", 1)[1] for a in args if a.startswith("-SHOpponentPool=")), None)
         return {"kind": "mix", "snapshot_arenas": 6, "bot_arenas": 2, "pool": pool}
@@ -757,7 +772,9 @@ def absolute_posix(path_text: str) -> str:
 def opponent_args(opponent: dict) -> list[str]:
     kind = opponent.get("kind", "self")
     if kind == "bot":
-        return ["-SHSelfPlay=0"]
+        return ["-SHSelfPlay=0", "-SHBotKind=script"]
+    if kind == "bt":
+        return ["-SHSelfPlay=0", "-SHBotKind=bt"]
     if kind == "model":
         # 모든 아레나를 스냅샷 상대로(999 > 아레나 수), 풀 = 그 스냅샷 하나, 이 학습의 스냅샷은 섞지 않는다.
         return ["-SHSelfPlay=1", "-SHOpponentMix=1", "-SHMixSnapshot=999", "-SHMixBot=0",
@@ -767,6 +784,7 @@ def opponent_args(opponent: dict) -> list[str]:
                 f"-SHMixSnapshot={int(opponent.get('snapshot_arenas', 6))}", f"-SHMixBot={int(opponent.get('bot_arenas', 2))}"]
         if opponent.get("pool"):
             args.append(f"-SHOpponentPool={absolute_posix(opponent['pool'])}")
+        args.append(f"-SHBotKind={'bt' if opponent.get('bot_kind') == 'bt' else 'script'}")
         return args
     return ["-SHSelfPlay=1"]
 
@@ -775,10 +793,13 @@ def describe_opponent(opponent: dict) -> str:
     kind = opponent.get("kind", "self")
     if kind == "bot":
         return "스크립트 봇"
+    if kind == "bt":
+        return "행동 트리 (BT_SHCombat)"
     if kind == "model":
         return f"고정 모델 — {opponent.get('snapshot')}"
     if kind == "mix":
-        return (f"혼합 — 스냅샷 {opponent.get('snapshot_arenas', 6)} · 봇 {opponent.get('bot_arenas', 2)} 아레나, "
+        bot = "행동 트리" if opponent.get("bot_kind") == "bt" else "스크립트 봇"
+        return (f"혼합 — 스냅샷 {opponent.get('snapshot_arenas', 6)} · {bot} {opponent.get('bot_arenas', 2)} 아레나, "
                 f"나머지 self-play / 스냅샷 풀: 이 학습의 스냅샷" + (f" + {opponent['pool']}" if opponent.get("pool") else ""))
     return "self-play (같은 정책끼리)"
 
@@ -788,7 +809,7 @@ def short_opponent(opponent: dict) -> str:
     if kind == "model":
         snapshot = Path(opponent.get("snapshot", ""))
         return f"모델 {snapshot.parent.name}·{snapshot.name.replace('cum', '')}"
-    return {"bot": "봇", "mix": "혼합"}.get(kind, "self")
+    return {"bot": "봇", "bt": "BT", "mix": "혼합"}.get(kind, "self")
 
 
 def change_opponent(config: dict, new: dict) -> None:
@@ -803,6 +824,85 @@ def change_opponent(config: dict, new: dict) -> None:
         "from": old, "to": new})
     config["opponent"] = new
     save_config(config)
+
+
+# --- 조준 · 명중 설정 ----------------------------------------------------------------
+#
+# run.json 의 "aim": {"assist": 0.0, "align": 1.0, "see": 1.0}  — 숫자 0 = 끔, 0 보다 크면 켬(그 값이 강도 · 배율).
+#   assist  조준 보조(-SHAimAssist, 강도 -SHAimAssistStrength 0~1). 보이는 가장 가까운 적 쪽으로 회전을 섞어 준다.
+#           ★ 보상이 아니라 **행동을 바꾸는 장치**다. 인게임(Lvl_Battle)에는 없다 — 켜고 학습한 모델은 인게임에서 조준이 약해질 수 있다.
+#   align   정렬 보상(-SHAimReward, 배율 -SHAimRewardScale). 조준선이 적에 가까울수록(정렬도^4) 주는 셰이핑 보상. 셰이핑 감쇠를 따른다.
+#   see     시야 보상(-SHSeeReward, 배율 -SHSeeRewardScale). 적을 시야에 두는 것 자체의 셰이핑 보상. 셰이핑 감쇠를 따른다.
+# 기본값은 트레이너 기본값(보조 끔, 정렬 · 시야 켬 x1)과 같다 — 지금까지의 학습은 모두 이 값이었다.
+# ★ 셋 다 관측 · 행동 스키마를 바꾸지 않는다 — 켜고 끄며 같은 모델을 이어서 학습할 수 있다.
+
+DEFAULT_AIM = {"assist": 0.0, "align": 1.0, "see": 1.0}
+AIM_LABELS = {"assist": "조준 보조", "align": "정렬 보상", "see": "시야 보상"}
+
+
+def aim_of(config: dict) -> dict:
+    """run.json 의 조준 · 명중 설정. "aim" 이 없는 옛 run.json 은 ue_args(추가 옵션)에서 추정한다."""
+    if config.get("aim"):
+        return {**DEFAULT_AIM, **config["aim"]}
+    values = dict(a.split("=", 1) for a in config.get("ue_args", []) if a.startswith(AIM_PREFIXES))
+
+    def number(key: str, default: float) -> float:
+        try:
+            return float(values[key])
+        except (KeyError, ValueError):
+            return default
+
+    return {
+        "assist": number("-SHAimAssistStrength", 1.0) if values.get("-SHAimAssist") == "1" else 0.0,
+        "align": 0.0 if values.get("-SHAimReward") == "0" else number("-SHAimRewardScale", 1.0),
+        "see": 0.0 if values.get("-SHSeeReward") == "0" else number("-SHSeeRewardScale", 1.0),
+    }
+
+
+def aim_args(aim: dict) -> list[str]:
+    """항상 여섯 옵션을 다 넘긴다 — 레벨의 트레이너 액터에 남은 값이 아니라 run.json 이 정하게."""
+    assist, align, see = float(aim["assist"]), float(aim["align"]), float(aim["see"])
+    return [f"-SHAimAssist={int(assist > 0)}", f"-SHAimAssistStrength={min(assist, 1.0) if assist > 0 else 1.0:g}",
+            f"-SHAimReward={int(align > 0)}", f"-SHAimRewardScale={align if align > 0 else 1.0:g}",
+            f"-SHSeeReward={int(see > 0)}", f"-SHSeeRewardScale={see if see > 0 else 1.0:g}"]
+
+
+def describe_aim(aim: dict) -> str:
+    parts = []
+    for key in ("assist", "align", "see"):
+        value = float(aim[key])
+        parts.append(f"{AIM_LABELS[key]} " + (f"켬(x{value:g})" if value > 0 else "끔"))
+    return " · ".join(parts)
+
+
+def change_aim(config: dict, new: dict) -> None:
+    """이어서 학습할 때 조준 · 명중 설정을 바꾼다. 언제 무엇에서 무엇으로 바꿨는지 run.json 에 남긴다."""
+    old = aim_of(config)
+    if old == new:
+        return
+    latest = latest_snapshot(TRAINING_DIR / config["name"])
+    config.setdefault("aim_history", []).append({
+        "at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "from_cumulative": hours_minutes(cumulative_seconds(latest)) if latest else "000h00m",
+        "from": old, "to": new})
+    config["aim"] = new
+    save_config(config)
+
+
+def parse_aim_value(text: str, current: float, maximum: float | None) -> float | None:
+    """'on' · '켬' · 'y' → 켬(지금 값, 꺼져 있었으면 1), 'off' · '끔' · 'n' · '0' → 0, 숫자 → 그 값. 잘못된 입력은 None."""
+    text = text.strip().lower()
+    if text in ("on", "켬", "y", "yes", "ㅛ"):
+        return current if current > 0 else 1.0
+    if text in ("off", "끔", "n", "no", "ㅜ"):
+        return 0.0
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    if value < 0 or (maximum is not None and value > maximum):
+        return None
+    return value
 
 
 def has_policy_files(snapshot_dir: Path) -> bool:
@@ -958,7 +1058,11 @@ def show_detail(run_dir: Path) -> None:
     for change in config.get("opponent_history", []):
         print(f"                  ↳ {change['at'][:16]} (누적 {change['from_cumulative']}) "
               f"{describe_opponent(change['from'])} → {describe_opponent(change['to'])}")
-    print(f"    언리얼 옵션 : {' '.join(a for a in config.get('ue_args', []) if not a.startswith(OPPONENT_PREFIXES + MAP_PREFIXES))}")
+    print(f"    조준 · 명중 : {describe_aim(aim_of(config))}")
+    for change in config.get("aim_history", []):
+        print(f"                  ↳ {change['at'][:16]} (누적 {change['from_cumulative']}) "
+              f"{describe_aim(change['from'])} → {describe_aim(change['to'])}")
+    print(f"    언리얼 옵션 : {' '.join(a for a in config.get('ue_args', []) if not a.startswith(MANAGED_PREFIXES))}")
     print(f"    스냅샷 주기 : {config.get('interval_minutes', 60):g}분")
     print(f"    메모        : {config.get('note') or '-'}")
     print(f"    로그        : {rel(run_dir / 'logs')}")
@@ -1030,13 +1134,14 @@ def ask_git_mode() -> str:
 
 def ask_opponent(current: dict | None = None, train_map: dict | None = None) -> dict:
     """학습 상대를 고른다. current 가 있으면 그게 기본값이다. train_map 은 혼합의 아레나 수를 정하는 데 쓴다."""
-    kinds = ["self", "bot", "model", "mix"]
+    kinds = ["self", "bot", "bt", "model", "mix"]
     default = str(kinds.index(current.get("kind", "self")) + 1) if current else "1"
     print("\n  학습 상대:" + (f"  (지금: {describe_opponent(current)})" if current else ""))
     print("    1) self-play — 같은 정책끼리 (기본)")
     print("    2) 스크립트 봇 — 고정 규칙 상대")
-    print("    3) 학습된 모델 하나 — 고른 스냅샷과만 싸운다(모든 아레나)")
-    print("    4) 혼합 — 아레나를 self-play / 과거 스냅샷 / 봇으로 나눈다")
+    print("    3) 행동 트리 — 인게임 \"행동 트리\" 팀과 같은 트리(BT_SHCombat). 엄폐물 끝에서 엿보고 옮겨 다닌다")
+    print("    4) 학습된 모델 하나 — 고른 스냅샷과만 싸운다(모든 아레나)")
+    print("    5) 혼합 — 아레나를 self-play / 과거 스냅샷 / 봇(스크립트 또는 행동 트리)으로 나눈다")
     while True:
         choice = ask("선택", default)
         try:
@@ -1045,11 +1150,13 @@ def ask_opponent(current: dict | None = None, train_map: dict | None = None) -> 
             if choice == "2":
                 return {"kind": "bot"}
             if choice == "3":
-                return {"kind": "model", "snapshot": pick_model("상대 모델")}
+                return {"kind": "bt"}
             if choice == "4":
+                return {"kind": "model", "snapshot": pick_model("상대 모델")}
+            if choice == "5":
                 return ask_mix(current if current and current.get("kind") == "mix" else None,
                                arena_count(train_map or default_map()))
-            print("    1~4 중에서 고른다.")
+            print("    1~5 중에서 고른다.")
         except Cancel:
             continue
 
@@ -1066,10 +1173,16 @@ def ask_mix(current: dict | None, total: int = DEFAULT_ARENA_COUNT) -> dict:
     current = scale_mix_for_map(current, {"arenas": total}) if current else None
     while True:
         snapshot_arenas = ask_count("과거 스냅샷 상대 아레나 수", int((current or {}).get("snapshot_arenas", total * 6 // 16)))
-        bot_arenas = ask_count("스크립트 봇 상대 아레나 수", int((current or {}).get("bot_arenas", total * 2 // 16)))
+        bot_arenas = ask_count("봇 상대 아레나 수", int((current or {}).get("bot_arenas", total * 2 // 16)))
         if snapshot_arenas + bot_arenas <= total:
             break
         print(f"    합이 아레나 수({total})를 넘는다.")
+    bot_kind = (current or {}).get("bot_kind", "script")
+    if bot_arenas > 0:
+        print("\n    봇 아레나의 상대:")
+        print("      1) 스크립트 봇" + (" (지금)" if bot_kind != "bt" else ""))
+        print("      2) 행동 트리 (BT_SHCombat)" + (" (지금)" if bot_kind == "bt" else ""))
+        bot_kind = "bt" if ask("선택", "2" if bot_kind == "bt" else "1") == "2" else "script"
     print("\n    스냅샷 풀(10분마다 여기서 상대를 바꾼다. 지는 상대일수록 자주):")
     print("      1) 이 학습이 저장한 스냅샷만 (기본)")
     print("      2) + 다른 학습의 스냅샷 전부 (Training/<이름>)")
@@ -1097,7 +1210,33 @@ def ask_mix(current: dict | None, total: int = DEFAULT_ARENA_COUNT) -> dict:
                 pool = rel(path.resolve()) if path.resolve().is_relative_to(ROOT) else path.resolve().as_posix()
                 break
             print("    없는 폴더다.")
-    return {"kind": "mix", "snapshot_arenas": snapshot_arenas, "bot_arenas": bot_arenas, "pool": pool}
+    return {"kind": "mix", "snapshot_arenas": snapshot_arenas, "bot_arenas": bot_arenas, "pool": pool,
+            "bot_kind": bot_kind}
+
+
+def ask_aim(current: dict | None = None) -> dict:
+    """조준 · 명중 설정(조준 보조 · 정렬 보상 · 시야 보상)을 하나씩 묻는다. 빈칸이면 지금 값 그대로."""
+    current = dict(current or DEFAULT_AIM)
+    print("\n  조준 · 명중 설정 — on / off / 숫자(강도 · 배율). 빈칸 = 지금 값")
+    print("    조준 보조 : 보이는 가장 가까운 적 쪽으로 회전을 섞어 준다(보상이 아니라 행동 보정, 강도 0~1).")
+    print("                ★ 인게임(Lvl_Battle)에는 조준 보조가 없다 — 켜고 학습한 모델은 인게임에서 조준이 약해질 수 있다.")
+    print("    정렬 보상 : 조준선이 적에 가까울수록 주는 셰이핑 보상(학습 초반에 크고 점점 줄어든다).")
+    print("    시야 보상 : 적을 시야에 두는 것 자체의 셰이핑 보상(같이 줄어든다).")
+    result = {}
+    for key, maximum in (("assist", 1.0), ("align", None), ("see", None)):
+        value = float(current[key])
+        shown = f"켬 x{value:g}" if value > 0 else "끔"
+        while True:
+            text = ask(f"{AIM_LABELS[key]} (지금 {shown})")
+            if not text:
+                result[key] = value
+                break
+            parsed = parse_aim_value(text, value, maximum)
+            if parsed is not None:
+                result[key] = parsed
+                break
+            print("    on / off / 0 이상의 숫자" + (" (최대 1)" if maximum else "") + " 로 적는다.")
+    return result
 
 
 def ask_map(current: dict | None = None) -> dict:
@@ -1232,6 +1371,8 @@ def menu_new() -> tuple[str, dict, str, float | None, str | None]:
     initial = ask_start_new()
     train_map = ask_map()
     opponent = ask_opponent(train_map=train_map)
+    print(f"\n    조준 · 명중: {describe_aim(DEFAULT_AIM)}  (기본)")
+    aim = ask_aim(DEFAULT_AIM) if ask_yes("조준 · 명중 설정을 바꿀까", default=False) else dict(DEFAULT_AIM)
     note = ask("메모 — 무엇을 바꿨는지 (빈칸 가능)")
     print(f"\n  기본 언리얼 옵션: {' '.join(DEFAULT_UE_ARGS)}")
     while True:
@@ -1249,13 +1390,14 @@ def menu_new() -> tuple[str, dict, str, float | None, str | None]:
     print(f"    시작 정책   : {initial or '처음부터'}")
     print(f"    학습 맵     : {describe_map(train_map)}")
     print(f"    학습 상대   : {describe_opponent(opponent)}")
+    print(f"    조준 · 명중 : {describe_aim(aim)}")
     print(f"    메모        : {note or '-'}")
     print(f"    언리얼 옵션 : {' '.join(DEFAULT_UE_ARGS + extra)}")
     print(f"    실행 시간   : {f'{hours:g}시간' if hours else 'Ctrl+C 로 멈출 때까지'}")
     print(f"    스냅샷      : {interval:g}분마다, {GIT_MODE_TEXT[git_mode]}")
     if not ask_yes("시작할까"):
         raise Cancel
-    config = create_config(name, initial, note, extra, interval, opponent, train_map)
+    config = create_config(name, initial, note, extra, interval, opponent, train_map, aim)
     return name, config, git_mode, hours, None
 
 
@@ -1277,6 +1419,9 @@ def menu_resume() -> tuple[str, dict, str, float | None, str | None]:
     print(f"\n    학습 상대: {describe_opponent(current)}")
     new_opponent = ask_opponent(current, new_map) if ask_yes("학습 상대를 바꿀까", default=False) else current
     new_opponent = scale_mix_for_map(new_opponent, new_map)
+    current_aim = aim_of(config)
+    print(f"\n    조준 · 명중: {describe_aim(current_aim)}")
+    new_aim = ask_aim(current_aim) if ask_yes("조준 · 명중 설정을 바꿀까", default=False) else current_aim
     hours = ask_hours()
     git_mode = ask_git_mode()
     print("\n  ── 확인 ──")
@@ -1285,6 +1430,8 @@ def menu_resume() -> tuple[str, dict, str, float | None, str | None]:
           (f"  (바꿈: {describe_map(current_map)} → )" if new_map != current_map else ""))
     print(f"    학습 상대   : {describe_opponent(new_opponent)}" +
           (f"  (바꿈: {describe_opponent(current)} → )" if new_opponent != current else ""))
+    print(f"    조준 · 명중 : {describe_aim(new_aim)}" +
+          (f"  (바꿈: {describe_aim(current_aim)} → )" if new_aim != current_aim else ""))
     print(f"    실행 시간   : {f'{hours:g}시간' if hours else 'Ctrl+C 로 멈출 때까지'}")
     print(f"    스냅샷      : {GIT_MODE_TEXT[git_mode]}")
     if not ask_yes("시작할까"):
@@ -1292,6 +1439,7 @@ def menu_resume() -> tuple[str, dict, str, float | None, str | None]:
     # 시작을 확정한 뒤에만 run.json 을 바꾼다.
     change_map(config, new_map)
     change_opponent(config, new_opponent)
+    change_aim(config, new_aim)
     record_start(config, start_point)
     return run_dir.name, config, git_mode, hours, start_point
 
@@ -1382,6 +1530,11 @@ def start(name: str, config: dict, git_mode: str, hours: float | None, start_poi
               f"있는 맵: {', '.join(map_catalog())}")
         return
 
+    opponent = opponent_of(config)
+    if (opponent.get("kind") == "bt" or opponent.get("bot_kind") == "bt") and not BT_ASSET.exists():
+        print(f"\n  행동 트리 상대에 쓸 {rel(BT_ASSET)} 이(가) 없다 — Docs/BehaviorTreeGuide.md 대로 만들 것.")
+        return
+
     _log_file = run_dir / "logs" / "train_py.log"
     _log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1393,9 +1546,10 @@ def start(name: str, config: dict, git_mode: str, hours: float | None, start_poi
     print(f"    스냅샷      : {config.get('interval_minutes', 60):g}분마다 → {rel(run_dir)}/cumXXXhYYm/")
     print(f"    학습 맵     : {describe_map(map_of(config))}")
     print(f"    학습 상대   : {describe_opponent(opponent_of(config))}")
+    print(f"    조준 · 명중 : {describe_aim(aim_of(config))}")
     print(f"    git         : {GIT_MODE_TEXT[git_mode]}")
-    print(f"    언리얼 옵션 : {' '.join(a for a in config['ue_args'] if not a.startswith(OPPONENT_PREFIXES + MAP_PREFIXES))} "
-          f"{' '.join(map_args(map_of(config)) + opponent_args(opponent_of(config)))}")
+    print(f"    언리얼 옵션 : {' '.join(a for a in config['ue_args'] if not a.startswith(MANAGED_PREFIXES))} "
+          f"{' '.join(map_args(map_of(config)) + opponent_args(opponent_of(config)) + aim_args(aim_of(config)))}")
     print("-" * 56)
     say(f"설정: {json.dumps(config, ensure_ascii=False)} / git={git_mode} / hours={hours}")
     train(name, config, git_mode=git_mode, session_hours=hours, start_point=start_point)
@@ -1416,11 +1570,15 @@ def main() -> None:
     parser.add_argument("--login", action="store_true", help="GitHub 로그인(토큰)을 새로 입력한다")
     parser.add_argument("--start", dest="start_point",
                         help="이미 있는 학습을 어디서부터: latest(기본) | scratch(처음부터) | <학습 이름 또는 스냅샷 폴더>")
-    parser.add_argument("--opponent", help="학습 상대: self | bot | mix | <학습 이름 또는 스냅샷 폴더>(그 모델 하나). "
+    parser.add_argument("--opponent", help="학습 상대: self | bot | bt(행동 트리) | mix | <학습 이름 또는 스냅샷 폴더>(그 모델 하나). "
                                            "이미 있는 학습에 주면 상대를 바꾼다(run.json 에 기록)")
     parser.add_argument("--map", help="학습 맵: basic | complex | corridor | <Content/RL 의 아레나 BP 이름>. "
                                       "이미 있는 학습에 주면 맵을 바꾼다(run.json 에 기록)")
     parser.add_argument("--arenas", type=int, help="아레나 수(기본: 맵마다 — 기본 · 복잡 · 복도 16)")
+    for flag, label in (("--aim-assist", "조준 보조(강도 0~1)"), ("--align-reward", "정렬 보상(배율)"),
+                        ("--see-reward", "시야 보상(배율)")):
+        parser.add_argument(flag, metavar="on|off|숫자",
+                            help=f"{label}. 새 학습의 값, 또는 이미 있는 학습의 값을 바꾼다(run.json 에 기록)")
     parser.add_argument("ue_args", nargs="*", help="새 학습에만: 언리얼 추가 옵션(예: -SHApproach=1). '--' 뒤에 적는다")
     args = parser.parse_args()
 
@@ -1454,7 +1612,7 @@ def main() -> None:
         raise SystemExit(problem)
     opponent = None
     if args.opponent:
-        if args.opponent in ("self", "bot"):
+        if args.opponent in ("self", "bot", "bt"):
             opponent = {"kind": args.opponent}
         elif args.opponent == "mix":
             opponent = {"kind": "mix", "snapshot_arenas": 6, "bot_arenas": 2, "pool": None}
@@ -1464,6 +1622,17 @@ def main() -> None:
             except ValueError as error:
                 raise SystemExit(str(error))
     config = load_config(args.name)
+    aim = None
+    if args.aim_assist or args.align_reward or args.see_reward:
+        aim = aim_of(config) if config else dict(DEFAULT_AIM)
+        for key, text, maximum in (("assist", args.aim_assist, 1.0), ("align", args.align_reward, None),
+                                   ("see", args.see_reward, None)):
+            if text:
+                value = parse_aim_value(text, float(aim[key]), maximum)
+                if value is None:
+                    raise SystemExit(f"{AIM_LABELS[key]}: '{text}' — on / off / 0 이상의 숫자"
+                                     + (" (최대 1)" if maximum else "") + " 로 적는다.")
+                aim[key] = value
     train_map = None
     if args.map or args.arenas:
         try:
@@ -1476,7 +1645,7 @@ def main() -> None:
             initial = resolve_initial(args.initial) if args.initial else None
             train_map = train_map or default_map()
             opponent = scale_mix_for_map(opponent, train_map) if opponent else None
-            config = create_config(args.name, initial, args.note, args.ue_args, args.interval_minutes, opponent, train_map)
+            config = create_config(args.name, initial, args.note, args.ue_args, args.interval_minutes, opponent, train_map, aim)
         except ValueError as error:
             raise SystemExit(str(error))
     else:
@@ -1484,6 +1653,8 @@ def main() -> None:
             change_map(config, train_map)
         if opponent is not None:
             change_opponent(config, scale_mix_for_map(opponent, map_of(config)))
+        if aim is not None:
+            change_aim(config, aim)
 
     start_point = None
     if args.start_point and args.start_point != "latest":

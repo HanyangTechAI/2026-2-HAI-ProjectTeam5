@@ -23,9 +23,9 @@ Training/
 
 ```
   1) 새 학습 시작      이름 → 시작 정책(처음부터 / 학습된 모델 목록에서 / 폴더 직접) → 학습 맵 · 아레나 수
-                       → 학습 상대 → 메모 → 추가 언리얼 옵션 → 실행 시간 → 올리기 방식 → 확인 화면 → 시작
+                       → 학습 상대 → (조준 · 명중 설정) → 메모 → 추가 언리얼 옵션 → 실행 시간 → 올리기 방식 → 확인 화면 → 시작
   2) 기존 학습 이어서   표에서 번호 선택 → 시작 지점(최신 / 이 학습의 다른 스냅샷 / 다른 모델 / 처음부터)
-                       → (학습 맵 바꾸기) → (학습 상대 바꾸기) → 실행 시간 → 올리기 방식 → 확인 화면 → 시작
+                       → (학습 맵 바꾸기) → (학습 상대 바꾸기) → (조준 · 명중 설정 바꾸기) → 실행 시간 → 올리기 방식 → 확인 화면 → 시작
   3) 학습 현황 보기     전체 표(상태 · 누적 · 스냅샷 수 · 마지막 저장 · push 수 · 메모)
                        → 번호를 고르면 설정과 스냅샷별 git 상태(push 됨 / 커밋됨(로컬) / 커밋 전)
   4) GitHub 로그인 설정  저장된 로그인 확인(push 권한 검사) · 새로 입력 · 지우기
@@ -75,17 +75,38 @@ Training/
 | 상대 | 뜻 | 언리얼 옵션(실행기가 만든다) |
 |---|---|---|
 | self-play (기본) | 같은 정책끼리 | `-SHSelfPlay=1` |
-| 스크립트 봇 | 고정 규칙 상대(`ASH_ScriptBotController`) | `-SHSelfPlay=0` |
+| 스크립트 봇 | 고정 규칙 상대(`ASH_ScriptBotController`) | `-SHSelfPlay=0 -SHBotKind=script` |
+| 행동 트리 | 인게임 "행동 트리" 팀과 같은 트리(`BT_SHCombat`) — 엄폐물 끝에서 엿보고 옮겨 다닌다. 라운드마다 트리를 처음부터 다시 돌린다 | `-SHSelfPlay=0 -SHBotKind=bt` |
 | 학습된 모델 하나 | 고른 스냅샷과만, 모든 아레나에서 | `-SHOpponentMix=1 -SHMixSnapshot=999 -SHMixBot=0 -SHOpponentPool=<스냅샷> -SHOpponentPoolOnly=1` |
-| 혼합 | 아레나를 과거 스냅샷 N · 봇 M · 나머지 self-play 로 나눈다. 스냅샷 상대는 10분마다 풀에서 바꾼다(지는 상대일수록 자주) | `-SHOpponentMix=1 -SHMixSnapshot=N -SHMixBot=M [-SHOpponentPool=<폴더>]` |
+| 혼합 | 아레나를 과거 스냅샷 N · 봇 M · 나머지 self-play 로 나눈다. 봇은 스크립트 봇 또는 행동 트리. 스냅샷 상대는 10분마다 풀에서 바꾼다(지는 상대일수록 자주) | `-SHOpponentMix=1 -SHMixSnapshot=N -SHMixBot=M -SHBotKind=script\|bt [-SHOpponentPool=<폴더>]` |
 
 - "학습된 모델" 목록은 `Training/<이름>/cum…` 과 `Snapshots/<날짜>/cum…` 에서 만든다. 관측 크기가 다른 모델을 고르면 경고한다
   (관측 크기가 지금 코드와 다르면 상대 정책이 무작위로 싸운다 — 트레이너는 에러를 내지 않는다).
 - 혼합의 풀: 기본은 이 학습이 저장한 스냅샷. 다른 학습 폴더나 `Snapshots/<날짜>` 를 더할 수 있다.
-- 명령줄: `train.bat A --opponent bot`, `--opponent self`, `--opponent mix`, `--opponent START_11_13`(그 학습의 최신 모델),
+- 명령줄: `train.bat A --opponent bot`, `--opponent bt`, `--opponent self`, `--opponent mix`, `--opponent START_11_13`(그 학습의 최신 모델),
   `--opponent Snapshots/2026-10-25/cum016h00m`. 이미 있는 학습에 주면 상대를 바꾼다.
 - 상대 옵션은 `run.json` 의 `"opponent"` 로만 정한다. 추가 옵션 칸에 `-SHSelfPlay` 등을 직접 적으면 막는다.
 - ★ "학습된 모델 하나" 는 트레이너의 `-SHOpponentPoolOnly` 가 필요하다(2026-11-16 추가) — 그 전 빌드로 돌리면 1시간 뒤부터 자기 스냅샷과도 싸운다.
+- ★ "행동 트리" 는 트레이너의 `-SHBotKind` 가 필요하다(2026-11-22 추가) — 그 전 빌드로 돌리면 옵션이 무시되고 스크립트 봇과 싸운다.
+  트리 에셋 `Content/Battle/AI/BT_SHCombat` 이 없으면 시작하지 않는다. 언리얼이 트리를 불러오지 못하면 스스로 끝나고 실행기도 멈춘다.
+
+## 조준 · 명중 설정
+
+트레이너의 조준 · 명중 관련 스위치 세 개를 켜고 끈다. 새 학습 메뉴와 이어서 학습 메뉴에서 "조준 · 명중 설정을 바꿀까" y.
+값은 `on` / `off` / 숫자(강도 · 배율). 바꾸면 `run.json` 의 `aim_history` 에 남는다. 세 개 모두 관측 · 행동 크기를 바꾸지 않아 같은 모델을 이어서 학습할 수 있다.
+
+| 설정 | 하는 일 | 기본 | 언리얼 옵션 |
+|---|---|---|---|
+| 조준 보조 | 보이는 가장 가까운 적 쪽으로 회전을 섞어 준다(강도 0~1). **보상이 아니라 행동 보정** | 끔 | `-SHAimAssist=0/1 -SHAimAssistStrength=x` |
+| 정렬 보상 | 조준선이 적에 가까울수록 주는 셰이핑 보상. 학습 초반에 크고 점점 줄어든다 | 켬 x1 | `-SHAimReward=0/1 -SHAimRewardScale=x` |
+| 시야 보상 | 적을 시야에 두는 것 자체의 셰이핑 보상. 같이 줄어든다 | 켬 x1 | `-SHSeeReward=0/1 -SHSeeRewardScale=x` |
+
+- 기본값은 트레이너 기본값과 같다 — 지금까지의 학습은 모두 이 값이었다. 실행기는 여섯 옵션을 항상 넘긴다.
+- ★ 인게임(`Lvl_Battle`)에는 조준 보조가 없다. 켜고 학습한 모델은 인게임에서 조준이 약해질 수 있다.
+- "명중률이 몇 % 를 넘으면 보상을 잠그는" 식의 장치는 코드에 없다(2026-11-22 확인). 명중 1발당 보너스(`HitBonus`)는
+  원격 브랜치 `yongjin-hit-bonus` 의 실험으로만 있고 preMerge 에 병합되지 않았다.
+- 명령줄: `train.bat A --aim-assist 0.5`, `--align-reward off`, `--see-reward 2`. 이미 있는 학습에 주면 값을 바꾼다.
+- 추가 옵션 칸에 `-SHAimReward` 등을 직접 적으면 막는다(`run.json` 의 `"aim"` 으로만 정한다).
 
 ## GitHub 로그인
 
@@ -115,6 +136,8 @@ push 하는 학습을 시작하면 **학습 전에** 로그인을 확인한다(�
 | A 를 처음부터 다시(같은 폴더) | `train.bat A --start scratch` |
 | ㄱ자 복도 맵으로 새 학습 | `train.bat D --map corridor` (아레나 수 `--arenas 24`) |
 | A 를 이제부터 복도 맵에서 | `train.bat A --map corridor` |
+| 행동 트리 상대로 새 학습 | `train.bat E --opponent bt` |
+| 정렬 보상을 끄고 이어서 | `train.bat A --align-reward off` |
 | 커밋만, push 는 안 함 | `train.bat A --no-push` |
 | 현황 표만 보기 | `train.bat --list` |
 

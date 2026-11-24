@@ -20,13 +20,14 @@ class ULearningAgentsManager;
 class ULearningAgentsPolicy;
 class USH_ShooterInteractor;
 class USH_ShooterTrainingEnv;
+class UBehaviorTree;
 
 /** 상대 혼합에서 아레나의 역할. 학습 정책은 항상 팀 0 이고, 팀 1 이 역할에 따라 다르다. */
 enum class ESHArenaRole : uint8
 {
 	SelfPlay,   /** 팀 1 도 학습 정책 (양쪽 데이터 모두 학습에 쓴다). */
 	Snapshot,   /** 팀 1 은 과거 스냅샷 정책 (추론만). */
-	Bot,        /** 팀 1 은 스크립트 봇 (반응 지연 무작위). */
+	Bot,        /** 팀 1 은 봇 — 스크립트 봇(반응 지연 무작위) 또는 행동 트리(bBehaviorTreeBots). */
 };
 
 /** 상대 풀의 한 항목 — 스냅샷 폴더 하나와 그 상대에 대한 학습 정책의 전적. */
@@ -188,7 +189,8 @@ public:
 	//~ 평가 모드 ---------------------------------------------------------------
 	//
 	//  -SHEval=<스냅샷 폴더> 로 켠다. 학습기·파이썬·크리틱 없이 정책을 불러와 추론만 돌린다.
-	//  상대는 지금의 팀 1 컨트롤러다 — 기본은 스크립트 봇, -SHSelfPlay=1 이면 같은 정책.
+	//  상대(팀 1)는 기본이 스크립트 봇이고, -SHSelfPlay=1 이면 같은 정책,
+	//  -SHEvalOpponent=<폴더> 면 그 스냅샷, -SHEvalOpponent=bt 면 행동 트리(BotBehaviorTree)다.
 	//  라운드 승패를 모아 RL 팀(팀 0)의 승률과 95% 신뢰구간을 낸다.
 	//  -SHEvalRealtime=1 이면 고정 델타타임을 쓰지 않아 화면을 켜고 실제 속도로 볼 수 있다.
 
@@ -214,6 +216,13 @@ public:
 	/** 비우면 팀 1 은 스크립트 봇(bSelfPlay 면 같은 정책). 채우면 그 스냅샷 정책과 싸운다. */
 	UPROPERTY(EditAnywhere, Category = "SH|RL|Eval", meta = (EditCondition = "bEvalOnPlay"))
 	FDirectoryPath EvalOpponentDirectory;
+
+	/**
+	 *  켜면 팀 1 을 행동 트리(BotBehaviorTree)로 조종한다. 명령줄은 -SHEvalOpponent=bt.
+	 *  ★ EvalOpponentDirectory · bSelfPlay · bOpponentMix 보다 우선한다 — 모든 아레나가 행동 트리와 싸운다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|Eval", meta = (EditCondition = "bEvalOnPlay"))
+	bool bEvalOpponentBehaviorTree = false;
 
 	/** 고정 델타타임을 쓰지 않고 실제 속도로 진행한다(화면으로 볼 때). */
 	UPROPERTY(EditAnywhere, Category = "SH|RL|Eval", meta = (EditCondition = "bEvalOnPlay"))
@@ -269,6 +278,22 @@ public:
 	 *  ★ 학습된 좌선회 66% 는 봇의 0.25초 고정 조준점 갱신을 공략한 것이었다(TODO 1A). */
 	UPROPERTY(EditAnywhere, Category = "SH|RL|OpponentMix")
 	FVector2D BotReactionDelayRange = FVector2D(0.1, 0.4);
+
+	/**
+	 *  봇 아레나(ESHArenaRole::Bot — -SHSelfPlay=0 이거나 혼합의 -SHMixBot=M)의 팀 1 을 행동 트리로 조종한다.
+	 *  -SHBotKind=bt 로 켜고 -SHBotKind=script(기본)로 끈다.
+	 *
+	 *  켜면 조립 때 그 유닛들의 스크립트 봇 컨트롤러를 ASH_BTBotController 로 바꿔 끼우고 BotBehaviorTree 를 돌린다.
+	 *  인게임에서 "행동 트리" 팀이 쓰는 것과 같은 트리 · 같은 감각(시야 스캔) · 같은 조작(이동 · 회전 · 방아쇠)이다.
+	 *  ★ 새 라운드가 시작될 때마다 트리를 처음부터 다시 돌린다 — 죽으면 트리가 멈추고(ASH_BTBotController), 블랙보드에는
+	 *    지난 라운드의 기억(마지막으로 본 위치 등)이 남아 있기 때문이다.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|OpponentMix")
+	bool bBehaviorTreeBots = false;
+
+	/** 행동 트리 봇이 쓰는 트리. -SHBotTree=<에셋 경로> 로 바꿀 수 있다. 기본 /Game/Battle/AI/BT_SHCombat. */
+	UPROPERTY(EditAnywhere, Category = "SH|RL|OpponentMix")
+	TSoftObjectPtr<UBehaviorTree> BotBehaviorTree;
 
 	UPROPERTY(VisibleAnywhere, Category = "SH|RL")
 	TObjectPtr<ULearningAgentsManager> OpponentManager;
@@ -367,6 +392,16 @@ protected:
 
 	/** 아레나 역할을 정한다(조립 초반, 컨트롤러 교체 전). */
 	void AssignArenaRoles();
+
+	/** 봇 아레나 팀 1 의 컨트롤러를 행동 트리 컨트롤러로 바꾸고 트리를 시작한다. 트리를 못 불러오면 false. */
+	bool SwapBotsToBehaviorTree();
+
+	/** 아레나의 행동 트리 봇을 처음부터 다시 돌린다(새 라운드). */
+	void RestartBehaviorTreeBots(const ASH_Arena& Arena) const;
+
+	/** 불러온 BotBehaviorTree. 조립 때 채운다. */
+	UPROPERTY(Transient)
+	TObjectPtr<UBehaviorTree> LoadedBotTree;
 
 	ESHArenaRole GetArenaRole(const ASH_Arena* Arena) const;
 
@@ -519,6 +554,12 @@ private:
 
 	//~ 상대 혼합 상태 -----------------------------------------------------------
 	FString EvalOpponentDir;
+
+	/** 이번 평가의 상대가 행동 트리인가(명령줄 · 레벨 설정을 합친 결과). 평가 모드가 아니면 항상 false. */
+	bool bEvalVsBehaviorTree = false;
+
+	/** 로그 · 평가 결과에 쓰는 팀 1 설명. */
+	FString DescribeOpponent() const;
 	TMap<TWeakObjectPtr<ASH_Arena>, ESHArenaRole> ArenaRoles;
 	TMap<TWeakObjectPtr<ASH_Arena>, int32> LastRoundIndex;
 	TMap<TWeakObjectPtr<ASH_Arena>, TArray<int32>> OpponentArenaAgentIds;

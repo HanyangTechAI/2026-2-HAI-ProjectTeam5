@@ -43,7 +43,9 @@ void ASH_CombatTrainer::WriteExperimentSettings()
 	Root->SetNumberField(TEXT("seed"), Seed);
 	Root->SetStringField(TEXT("resume_directory"), ResumeDir);
 	Root->SetStringField(TEXT("evaluation_snapshot"), EvalSnapshotDir);
-	Root->SetStringField(TEXT("evaluation_opponent"), EvalOpponentDir);
+	Root->SetStringField(TEXT("evaluation_opponent"), bEvalVsBehaviorTree ? FString(TEXT("bt")) : EvalOpponentDir);
+	Root->SetStringField(TEXT("bot_kind"), bBehaviorTreeBots ? TEXT("bt") : TEXT("script"));
+	Root->SetStringField(TEXT("bot_behavior_tree"), bBehaviorTreeBots ? BotBehaviorTree.ToString() : FString());
 	Root->SetNumberField(TEXT("evaluation_noise"), EvalActionNoise);
 	Root->SetNumberField(TEXT("evaluation_max_rounds"), EvalMaxRounds);
 	Root->SetBoolField(TEXT("evaluation_realtime"), bEvalRealtime);

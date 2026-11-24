@@ -115,6 +115,20 @@ Peek 중에 적이 보이면 맨 왼쪽 Engage 의 데코레이터(Observer abor
 - 게임 화면에서 `'`(작은따옴표) → 게임플레이 디버거 → 넘패드 2 = Behavior Tree.
 - 시야 레이 체크박스를 켜면 행동 트리 유닛의 시야(부채꼴)도 보인다 — 같은 시야 컴포넌트를 쓰기 때문이다.
 
+## 5. 평가 모드에서 상대로 쓰기
+
+학습된 모델(팀 0)이 행동 트리(팀 1)를 상대로 얼마나 이기는지 잰다. 학습은 하지 않는다.
+
+**에디터에서 보기** — `Lvl_SHView` 를 열고 트레이너 액터(`SH_CombatTrainer`)의 `SH|RL|Eval` 에서
+1. `bEvalOnPlay` 켜기, `EvalSnapshotDirectory` = 볼 모델 폴더(예: `Training/START_11_13/cum017h06m`)
+2. `bEvalOpponentBehaviorTree` 켜기 → Play. 스냅샷 상대 · self-play 설정보다 우선한다.
+
+**헤드리스로 승률 재기** — `-SHEval=<모델 폴더> -SHEvalOpponent=bt -SHEvalRounds=<라운드 수>`.
+끝나면 로그에 팀 0 승률과 95% 구간이 `상대 행동 트리 'BT_SHCombat'` 와 함께 나온다.
+- `-SHAlternateSides=1` 을 같이 주면 라운드마다 진영을 바꾼다(평가 기본은 고정 진영이라 지형 유불리가 섞인다).
+- `-SHArena=BP_SHArena_Corridor` 처럼 맵을, `-SHEvalNoise=0` 으로 행동 잡음을 정할 수 있다.
+- 다른 트리를 쓰려면 `-SHBotTree=<에셋 경로>`.
+
 ## 노드 요약 (C++)
 
 | 노드 | 파일 | 하는 일 |
