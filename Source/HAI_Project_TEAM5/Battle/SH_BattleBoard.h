@@ -51,6 +51,17 @@ public:
 	/** 이 레벨에서 쓰는 보드인가. */
 	[[nodiscard]] bool IsActiveBoard() const { return bActiveBoard; }
 
+	/**
+	 *  게임 중에 이 보드를 켜거나 끈다(맵 바꾸기). 배치 단계에서만 부른다 — 게임모드의 SelectBoard 가 부른다.
+	 *    끄기: 양 팀 유닛을 모두 없애고, 숨기고, 콜리전과 Tick 을 끈다.
+	 *    켜기: 보이게 하고 콜리전 · Tick 을 켠 뒤 **다음 프레임에** 격자 · 막힌 칸 · 적 배치를 만든다.
+	 *  ★ 다음 프레임인 이유: 방금 켠 콜리전이 겹침 검사(막힌 칸)에 반영되기 전에 검사하면 엄폐물 칸이 비어 보일 수 있다.
+	 */
+	void SetBoardActive(bool bActive);
+
+	/** HUD 의 맵 목록에 보이는 이름. 비어 있으면 액터 이름. */
+	[[nodiscard]] FText GetDisplayName() const;
+
 	//~ 배치 단계 -------------------------------------------------------------
 
 	/** 왼쪽 클릭: 빈 칸이면 아군 추가, 아군 칸이면 선택, 선택 중이면 이동. */
@@ -137,6 +148,9 @@ private:
 	void SpawnEnemies();
 	void RebuildBlockedCells();
 
+	/** 켜진 보드의 시작 준비: 격자 → 막힌 칸 → 적 배치 → 배치 수 방송. BeginPlay 와 SetBoardActive(true) 가 부른다. */
+	void PrepareBoard();
+
 	/** 유닛을 칸으로 순간이동시키고 조준을 맞춘다. */
 	void PlaceUnitAt(ASH_RLCharacter& Unit, FIntPoint Cell, int32 Team) const;
 
@@ -171,9 +185,13 @@ private:
 	UPROPERTY(EditAnywhere, Category = "SH|Battle")
 	TObjectPtr<USH_EnemyLayout> EnemyLayout;
 
-	/** 끄면 이 보드를 쓰지 않는다. 레벨에서 켜진 보드는 하나여야 한다. */
+	/** 끄면 이 보드를 쓰지 않는다. 레벨에서 켜진 보드는 하나여야 한다. 게임 중에는 HUD 의 맵 목록으로 바꾼다. */
 	UPROPERTY(EditAnywhere, Category = "SH|Battle")
 	bool bActiveBoard = true;
+
+	/** HUD 맵 목록의 이름(예: "ㄱ자 복도"). ★ 액터 라벨은 에디터 전용이라 패키지 빌드에서는 읽을 수 없어 따로 둔다. */
+	UPROPERTY(EditAnywhere, Category = "SH|Battle")
+	FText DisplayName;
 
 	/**
 	 *  아군 구역의 동쪽 경계(보드 기준 X, cm). 칸 중심이 이 값보다 서쪽이면 아군 칸이다.

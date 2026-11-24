@@ -61,6 +61,18 @@ private:
 	UFUNCTION()
 	void HandleEnemyModelChanged(FString SelectedItem, ESelectInfo::Type SelectionType);
 
+	UFUNCTION()
+	void HandleMapChanged(FString SelectedItem, ESelectInfo::Type SelectionType);
+
+	/** 레벨의 보드 목록으로 맵 콤보박스를 채우고 지금 보드를 고른다. */
+	void RefreshMapCombo();
+
+	/** 게임모드가 보드를 바꿨다 — 배치 수 구독을 옮기고 레이 체크박스 상태를 새 보드에 건다. */
+	void HandleBoardChanged(ASH_BattleBoard* NewBoard);
+
+	/** 보드의 배치 수 방송을 구독한다(이전 보드 구독은 푼다). */
+	void BindBoard(ASH_BattleBoard* NewBoard);
+
 	/** 콤보박스에 항목을 넣고 게임모드의 현재 값을 보여 준다. */
 	void SetupControlCombo(UComboBoxString& Combo, int32 Team);
 
@@ -126,6 +138,13 @@ private:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UComboBoxString> EnemyModelCombo;
 
+	/** 맵(보드) 선택. 레벨에 놓인 보드 전부가 나온다(ASH_BattleBoard::DisplayName). 배치 단계에서만 바꿀 수 있다. */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UComboBoxString> MapCombo;
+
+	/** 맵 콤보박스 항목 ↔ 보드. 같은 순서. */
+	TArray<TWeakObjectPtr<ASH_BattleBoard>> MapBoards;
+
 	/** 콤보박스 항목(표시 이름) ↔ 스냅샷 폴더. 같은 순서. */
 	TArray<FString> ModelLabels;
 	TArray<FString> ModelDirectories;
@@ -138,4 +157,5 @@ private:
 	FDelegateHandle PhaseHandle;
 	FDelegateHandle PlacementHandle;
 	FDelegateHandle StartFailedHandle;
+	FDelegateHandle BoardChangedHandle;
 };

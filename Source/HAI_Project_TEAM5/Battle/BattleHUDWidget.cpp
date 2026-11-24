@@ -40,12 +40,13 @@ void UBattleHUDWidget::NativeConstruct()
 
 	if (ASH_BattleBoard* BoardPtr = Mode->GetBoard())
 	{
-		Board = BoardPtr;
-		PlacementHandle = BoardPtr->OnPlacementChanged.AddUObject(this, &ThisClass::HandlePlacementChanged);
-		HandlePlacementChanged(BoardPtr->GetPlacedCount(), BoardPtr->GetRequiredCount());
+		BindBoard(BoardPtr);
 		VisionRaysCheckBox->SetIsChecked(BoardPtr->AreVisionRaysVisible());
 		AimRaysCheckBox->SetIsChecked(BoardPtr->AreAimRaysVisible());
 	}
+	BoardChangedHandle = Mode->OnBoardChanged.AddUObject(this, &ThisClass::HandleBoardChanged);
+	RefreshMapCombo();
+	MapCombo->OnSelectionChanged.AddUniqueDynamic(this, &ThisClass::HandleMapChanged);
 
 	SetupControlCombo(*AllyControlCombo, 0);
 	SetupControlCombo(*EnemyControlCombo, 1);
@@ -61,6 +62,69 @@ void UBattleHUDWidget::NativeConstruct()
 	SpeedSlider->SetValue(Mode->GetGameSpeed());
 	RefreshSpeedText(Mode->GetGameSpeed());
 	HandlePhaseChanged(Mode->GetPhase());
+}
+
+void UBattleHUDWidget::BindBoard(ASH_BattleBoard* NewBoard)
+{
+	if (ASH_BattleBoard* OldBoard = Board.Get())
+	{
+		OldBoard->OnPlacementChanged.Remove(PlacementHandle);
+	}
+	Board = NewBoard;
+	if (NewBoard)
+	{
+		PlacementHandle = NewBoard->OnPlacementChanged.AddUObject(this, &ThisClass::HandlePlacementChanged);
+		HandlePlacementChanged(NewBoard->GetPlacedCount(), NewBoard->GetRequiredCount());
+	}
+}
+
+void UBattleHUDWidget::HandleBoardChanged(ASH_BattleBoard* NewBoard)
+{
+	BindBoard(NewBoard);
+	if (NewBoard)
+	{
+		// 체크박스에 보이는 상태를 새 보드에도 건다(보드마다 따로 기억하지 않는다).
+		NewBoard->SetVisionRaysVisible(VisionRaysCheckBox->IsChecked());
+		NewBoard->SetAimRaysVisible(AimRaysCheckBox->IsChecked());
+	}
+	RefreshMapCombo();
+}
+
+void UBattleHUDWidget::RefreshMapCombo()
+{
+	const ASH_BattleGameMode* Mode = GameMode.Get();
+	if (!Mode)
+	{
+		return;
+	}
+	TGuardValue<bool> Guard(bFillingCombos, true);
+	MapCombo->ClearOptions();
+	MapBoards.Reset();
+	const ASH_BattleBoard* Current = Mode->GetBoard();
+	for (ASH_BattleBoard* Each : Mode->GetBoards())
+	{
+		const FString Label = Each->GetDisplayName().ToString();
+		MapCombo->AddOption(Label);
+		MapBoards.Add(Each);
+		if (Each == Current)
+		{
+			MapCombo->SetSelectedOption(Label);
+		}
+	}
+}
+
+void UBattleHUDWidget::HandleMapChanged(FString SelectedItem, ESelectInfo::Type SelectionType)
+{
+	ASH_BattleGameMode* Mode = GameMode.Get();
+	const int32 Index = MapCombo->FindOptionIndex(SelectedItem);
+	if (bFillingCombos || !Mode || !MapBoards.IsValidIndex(Index))
+	{
+		return;
+	}
+	if (!Mode->SelectBoard(MapBoards[Index].Get()))
+	{
+		RefreshMapCombo();   // 거절됐다(전투 중) — 실제 값으로 되돌린다
+	}
 }
 
 void UBattleHUDWidget::HandleSpeedChanged(const float Value)
@@ -234,6 +298,7 @@ void UBattleHUDWidget::NativeDestruct()
 	{
 		Mode->OnPhaseChanged.Remove(PhaseHandle);
 		Mode->OnStartFailed.Remove(StartFailedHandle);
+		Mode->OnBoardChanged.Remove(BoardChangedHandle);
 	}
 	if (ASH_BattleBoard* BoardPtr = Board.Get())
 	{
@@ -280,6 +345,7 @@ void UBattleHUDWidget::HandlePhaseChanged(const ESHBattlePhase NewPhase)
 	// 조종 방식은 배치 중에만 바꾼다. 전투 중에 바꾸면 이미 돌고 있는 정책 · 트리와 어긋난다.
 	AllyControlCombo->SetIsEnabled(bPlacement);
 	EnemyControlCombo->SetIsEnabled(bPlacement);
+	MapCombo->SetIsEnabled(bPlacement);
 	if (bPlacement)
 	{
 		RefreshModelCombos();   // 학습이 그 사이 새 스냅샷을 만들었을 수 있다

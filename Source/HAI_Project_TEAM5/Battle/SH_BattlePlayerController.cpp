@@ -51,9 +51,10 @@ void ASH_BattlePlayerController::BeginPlay()
 		return;
 	}
 
-	if (const ASH_BattleGameMode* Mode = World->GetAuthGameMode<ASH_BattleGameMode>())
+	if (ASH_BattleGameMode* Mode = World->GetAuthGameMode<ASH_BattleGameMode>())
 	{
 		Board = Mode->GetBoard();
+		Mode->OnBoardChanged.AddUObject(this, &ThisClass::HandleBoardChanged);
 	}
 
 	// 카메라 초기값이 보드 높이를 쓰므로 보드를 먼저 찾는다.

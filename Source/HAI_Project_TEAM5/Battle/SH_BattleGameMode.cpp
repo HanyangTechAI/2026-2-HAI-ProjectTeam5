@@ -95,13 +95,57 @@ ASH_BattleBoard* ASH_BattleGameMode::GetBoard() const
 	return CachedBoard.Get();
 }
 
+TArray<ASH_BattleBoard*> ASH_BattleGameMode::GetBoards() const
+{
+	TArray<ASH_BattleBoard*> Boards;
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<ASH_BattleBoard> It(World); It; ++It)
+		{
+			Boards.Add(*It);
+		}
+	}
+	Boards.Sort([](const ASH_BattleBoard& A, const ASH_BattleBoard& B)
+	{
+		return A.GetDisplayName().ToString() < B.GetDisplayName().ToString();
+	});
+	return Boards;
+}
+
+bool ASH_BattleGameMode::SelectBoard(ASH_BattleBoard* NewBoard)
+{
+	ASH_BattleBoard* OldBoard = GetBoard();
+	if (!NewBoard || Phase != ESHBattlePhase::Placement)
+	{
+		return false;
+	}
+	if (NewBoard == OldBoard)
+	{
+		return true;
+	}
+
+	if (OldBoard)
+	{
+		OldBoard->OnBattleEnded.Remove(BattleEndedHandle);
+		OldBoard->SetBoardActive(false);
+	}
+	NewBoard->SetBoardActive(true);
+	CachedBoard = NewBoard;
+	BattleEndedHandle = NewBoard->OnBattleEnded.AddUObject(this, &ThisClass::HandleBattleEnded);
+
+	UE_LOG(LogTemp, Display, TEXT("[SH_BattleGameMode] 맵 변경: %s → %s"),
+		OldBoard ? *OldBoard->GetDisplayName().ToString() : TEXT("(없음)"), *NewBoard->GetDisplayName().ToString());
+	OnBoardChanged.Broadcast(NewBoard);
+	return true;
+}
+
 void ASH_BattleGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
 	if (ASH_BattleBoard* BoardPtr = GetBoard())
 	{
-		BoardPtr->OnBattleEnded.AddUObject(this, &ThisClass::HandleBattleEnded);
+		BattleEndedHandle = BoardPtr->OnBattleEnded.AddUObject(this, &ThisClass::HandleBattleEnded);
 	}
 	else
 	{

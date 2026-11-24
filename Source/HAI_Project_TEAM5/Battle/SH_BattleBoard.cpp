@@ -11,6 +11,7 @@
 #include "RL/SH_VisionComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
+#include "TimerManager.h"
 #include "Gun.h"
 #include "LearningAgentsEntityInterface.h"
 #include "RL/SH_RLCharacter.h"
@@ -57,6 +58,11 @@ void ASH_BattleBoard::BeginPlay()
 		return;
 	}
 
+	PrepareBoard();
+}
+
+void ASH_BattleBoard::PrepareBoard()
+{
 	// 격자는 아레나 크기를 따른다. 반경 1,750 → 14 x 14, 2,450 → 20 x 20, 직사각형 반폭 2,200 x 550 → 18 x 6.
 	// ㄱ자는 중심(꺾이는 곳)에서 다리 길이만큼 −X · −Y 로 뻗으므로 ±LegLength 정사각형으로 덮는다(다리 밖 칸은 막힌 칸).
 	if (BoundaryShape == ESHArenaShape::Rectangle)
@@ -77,6 +83,62 @@ void ASH_BattleBoard::BeginPlay()
 	RebuildBlockedCells();
 	SpawnEnemies();
 	BroadcastPlacement();
+}
+
+FText ASH_BattleBoard::GetDisplayName() const
+{
+	return DisplayName.IsEmpty() ? FText::FromString(GetName()) : DisplayName;
+}
+
+void ASH_BattleBoard::SetBoardActive(const bool bActive)
+{
+	if (bActive == bActiveBoard)
+	{
+		return;
+	}
+	bActiveBoard = bActive;
+	bBattleRunning = false;
+	bPlacementOpen = true;
+	SelectedCell.Reset();
+	HoveredCell.Reset();
+
+	if (!bActive)
+	{
+		StopBehaviorTrees();
+		for (ASH_RLCharacter* Unit : GetAllUnits())   // 복사본을 돈다 — 아래에서 배치표를 고친다
+		{
+			(void)AllyPlacement.Remove(Unit);
+			(void)EnemyPlacement.Remove(Unit);
+			DestroyUnit(*Unit);
+		}
+		if (RootComponent)
+		{
+			RootComponent->SetVisibility(false, /*bPropagateToChildren=*/true);
+		}
+		SetActorEnableCollision(false);
+		SetActorTickEnabled(false);
+		return;
+	}
+
+	if (RootComponent)
+	{
+		RootComponent->SetVisibility(true, /*bPropagateToChildren=*/true);
+	}
+	// 위에서 모든 자식을 보이게 했으므로, 경계 모양에 따라 숨겨야 하는 C++ 벽(직사각형 · ㄱ자에서 안 쓰는 벽)을 다시 숨긴다.
+	RebuildArenaGeometry();
+	SetActorEnableCollision(true);
+	SetActorTickEnabled(true);
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]
+		{
+			if (bActiveBoard)
+			{
+				PrepareBoard();
+			}
+		}));
+	}
 }
 
 //~ 칸 판정 -------------------------------------------------------------------

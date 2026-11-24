@@ -108,4 +108,7 @@ private:
 
 	/** 게임모드가 찾아 준다. 레벨의 액터라 이 컨트롤러가 소유하지 않는다. */
 	TWeakObjectPtr<ASH_BattleBoard> Board;
+
+	/** 게임모드가 맵(보드)을 바꾸면 클릭 대상도 새 보드로. */
+	void HandleBoardChanged(ASH_BattleBoard* NewBoard) { Board = NewBoard; }
 };

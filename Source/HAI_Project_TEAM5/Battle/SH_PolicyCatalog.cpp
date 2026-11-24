@@ -6,7 +6,8 @@
 #include "Misc/Paths.h"
 #include "RL/SH_SnapshotFiles.h"
 
-namespace
+// ★ 이름 있는 네임스페이스: 유니티 빌드에서 SH_CombatTrainer.cpp 의 익명 네임스페이스 FormatHoursMinutes 와 한 파일로 묶이면 재정의 에러가 난다.
+namespace SHPolicyCatalogDetail
 {
 	/** "cum017h06m" / "cum017h06m_2" → 초. 형식이 아니면 −1. */
 	double SecondsFromFolderName(const FString& Name)
@@ -63,8 +64,8 @@ namespace
 TArray<SHPolicyCatalog::FEntry> SHPolicyCatalog::Scan()
 {
 	TArray<FEntry> Training, Snapshots;
-	ScanRoot(TEXT("Training"), Training);
-	ScanRoot(TEXT("Snapshots"), Snapshots);
+	SHPolicyCatalogDetail::ScanRoot(TEXT("Training"), Training);
+	SHPolicyCatalogDetail::ScanRoot(TEXT("Snapshots"), Snapshots);
 
 	Training.Sort([](const FEntry& A, const FEntry& B)
 	{
@@ -96,7 +97,7 @@ FString SHPolicyCatalog::MakeLabel(const FString& Directory)
 FString SHPolicyCatalog::MakeShortLabel(const FString& Directory)
 {
 	const FString Name = FPaths::GetCleanFilename(Directory);
-	const double Seconds = SecondsFromFolderName(Name);
+	const double Seconds = SHPolicyCatalogDetail::SecondsFromFolderName(Name);
 	// "cum015h06m_2" 처럼 같은 시간에 두 번 저장된 폴더는 접미사를 붙여야 목록에서 구별된다.
-	return Seconds >= 0.0 ? FormatHoursMinutes(Seconds) + Name.Mid(10) : Name;
+	return Seconds >= 0.0 ? SHPolicyCatalogDetail::FormatHoursMinutes(Seconds) + Name.Mid(10) : Name;
 }

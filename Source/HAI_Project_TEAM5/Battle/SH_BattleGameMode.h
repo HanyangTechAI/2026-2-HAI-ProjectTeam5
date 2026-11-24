@@ -15,6 +15,7 @@ class UBehaviorTree;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FSHOnPhaseChanged, ESHBattlePhase);
 DECLARE_MULTICAST_DELEGATE_OneParam(FSHOnStartFailed, const FString& /*Reason*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FSHOnBoardChanged, ASH_BattleBoard* /*NewBoard*/);
 
 /**
  *  게임 흐름. 단계 전이는 SetPhase 한 곳에서만 일어나고, 바뀔 때마다 UI 에 알린다.
@@ -75,6 +76,17 @@ public:
 	 */
 	[[nodiscard]] ASH_BattleBoard* GetBoard() const;
 
+	/** 레벨의 모든 보드(맵 목록). 이름순. */
+	[[nodiscard]] TArray<ASH_BattleBoard*> GetBoards() const;
+
+	/**
+	 *  쓰는 보드(맵)를 바꾼다. 배치 단계에서만. 지금 보드의 유닛(배치한 아군 포함)은 없어지고 새 보드에 적이 새로 선다.
+	 *  바뀌면 OnBoardChanged 를 방송한다 — 컨트롤러(클릭) · HUD(배치 수, 레이 체크박스)가 새 보드로 옮겨 간다.
+	 */
+	bool SelectBoard(ASH_BattleBoard* NewBoard);
+
+	FSHOnBoardChanged OnBoardChanged;
+
 	FSHOnPhaseChanged OnPhaseChanged;
 
 	/** 폰이 없는 게임모드다. 기본 구현은 스폰 실패로 컨트롤러를 비활성 상태로 보낸다. */
@@ -110,6 +122,9 @@ private:
 	ESHTeamControl TeamControl[2] = { ESHTeamControl::RLModel, ESHTeamControl::RLModel };
 
 	mutable TWeakObjectPtr<ASH_BattleBoard> CachedBoard;
+
+	/** 지금 보드의 OnBattleEnded 구독. 보드를 바꿀 때 풀고 새 보드에 다시 건다. */
+	FDelegateHandle BattleEndedHandle;
 
 	float GameSpeed = 1.0f;
 
